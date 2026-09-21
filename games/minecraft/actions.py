@@ -128,12 +128,15 @@ class MinecraftActionBuilder(GameActionBuilder):
         ]
 
     def _sprint(self, skill: SkillDefinition, params: dict[str, Any]) -> list[ActionPlan]:
+        # Sprint in Minecraft for Windows (Bedrock) is triggered by HOLDING the
+        # forward key (auto-sprint) - NOT Shift+W. Shift is the sneak/crouch key,
+        # so the old combo made the player creep forward instead of sprinting.
         duration = int(params.get("duration_ms", 600))
         return [
             ActionPlan(
-                action_type=ActionType.KEY_COMBO, keys=["shift", "w"],
-                duration_ms=duration, skill_name=skill.name,
-                description="Sprint forward.",
+                action_type=ActionType.KEYBOARD_HOLD, mode=KeyMode.HOLD,
+                key="w", duration_ms=duration, skill_name=skill.name,
+                description="Sprint forward (hold W).",
             )
         ]
 
@@ -142,12 +145,15 @@ class MinecraftActionBuilder(GameActionBuilder):
                                  int(params.get("dy", 0)))]
 
     def _look_delta(self, skill: SkillDefinition, dx: int, dy: int) -> ActionPlan:
-        # Relative look via mouse move to an offset from screen centre.
-        cx, cy = 960, 540
+        # Look via a RELATIVE mouse delta. Minecraft captures the mouse with raw
+        # input and ignores absolute cursor positioning, so the previous approach
+        # (moving the OS cursor to an absolute screen offset) turned the camera by
+        # nothing. `relative`/`delta` route through MouseExecutor._move_relative,
+        # which emits a true relative movement event the game reads.
         return ActionPlan(
             action_type=ActionType.MOUSE_MOVE,
-            position=Point(x=max(0, cx + dx), y=max(0, cy + dy)),
-            duration_ms=120, skill_name=skill.name, description="Look around.",
+            relative=True, delta=(int(dx), int(dy)),
+            duration_ms=80, skill_name=skill.name, description="Look (relative delta).",
         )
 
     def _hold_mouse(self, skill: SkillDefinition, button: MouseButton, ms: int) -> ActionPlan:

@@ -107,7 +107,12 @@ class ActionAgent:
         if action == "key_combo" and not plan.keys:
             raise ActionValidationError("Key combo missing keys.")
         # Mouse clicks may omit position (act at current cursor); moves/drags need it.
-        if action in ("mouse_move", "mouse_drag") and plan.position is None:
+        # A RELATIVE mouse_move carries a delta instead of an absolute position.
+        if action == "mouse_move" and plan.relative:
+            if plan.delta is None:
+                raise ActionValidationError("Relative mouse move missing delta.",
+                                            context={"plan": action})
+        elif action in ("mouse_move", "mouse_drag") and plan.position is None:
             raise ActionValidationError("Mouse action missing position.",
                                         context={"plan": action})
         if action == "mouse_drag" and plan.end_position is None:

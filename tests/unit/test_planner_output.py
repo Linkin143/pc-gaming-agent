@@ -54,6 +54,28 @@ def test_planner_navigates_for_navigation_objective(config, registry):
     assert intent.target == "Electrical"
 
 
+def test_minecraft_crosshair_bypasses_low_confidence_observe(config, mc_registry):
+    """Regression: an in-world frame (crosshair=True) with LOW fused confidence
+    must NOT fall back to `observe`. The crosshair is deterministic pixel-truth,
+    so the planner should pick a gameplay skill instead of looping on observe."""
+    planner = _deterministic_planner(config)
+    state = new_structured_state("minecraft")
+    state.screen = ScreenState.GAMEPLAY
+    state.overall_confidence = 0.245  # the exact low value seen in the live run
+    # Minimal in-world HUD: crosshair confirmed, nothing threatening, grass ahead.
+    state.game_state = {
+        "crosshair_visible": True, "health": 20, "under_threat": False,
+        "block_under_crosshair": "grass", "day_time": "day", "is_paused": False,
+    }
+    available = mc_registry.list_available(state)
+    intent = planner.plan(state=state, user_goal="Reach the world",
+                          available_skills=available)
+    assert intent.skill != "observe"
+    # With grass ahead it scans around (P6); either way it must be a gameplay skill.
+    assert intent.skill in {s.name for s in available}
+    assert intent.skill.startswith("mc_")
+
+
 def test_planner_output_confidence_in_range(config, registry):
     planner = _deterministic_planner(config)
     state = new_structured_state("among_us")

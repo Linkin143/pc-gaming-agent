@@ -61,6 +61,17 @@ class MouseExecutor:
                 time.sleep((duration_ms / 1000.0) / steps)
         self._controller.position = (x, y)
 
+    def _move_relative(self, dx: int, dy: int) -> None:
+        """Send a RELATIVE mouse delta (for raw-input games like Minecraft).
+
+        ``pynput``'s ``Controller.move`` emits a relative movement event, which
+        mouse-captured games read directly - unlike setting an absolute position,
+        which such games ignore. Bounds are not applicable to relative deltas.
+        """
+        if self.dry_run:
+            return
+        self._controller.move(int(dx), int(dy))
+
     def execute(self, plan: ActionPlan) -> ActionResult:
         start = time.perf_counter()
         try:
@@ -86,8 +97,12 @@ class MouseExecutor:
         button = self._resolve_button(str(plan.button) if plan.button else None)
 
         if action == "mouse_move":
-            self._require_pos(plan)
-            self._move(plan.position.x, plan.position.y, plan.duration_ms)
+            if plan.relative:
+                dx, dy = plan.delta or (0, 0)
+                self._move_relative(int(dx), int(dy))
+            else:
+                self._require_pos(plan)
+                self._move(plan.position.x, plan.position.y, plan.duration_ms)
         elif action == "mouse_click":
             if plan.position is not None:
                 self._move(plan.position.x, plan.position.y, plan.duration_ms)

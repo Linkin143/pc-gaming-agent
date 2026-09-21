@@ -261,6 +261,14 @@ class ActionPlan(FrameworkModel):
     duration_ms: int = Field(default=0, ge=0, le=10000)
     skill_name: str = ""
     description: str = ""
+    # When True, a MOUSE_MOVE carries a RELATIVE delta (position.x/y = dx/dy)
+    # rather than an absolute screen coordinate. Minecraft (and most FPS games)
+    # capture the mouse with raw input and ignore absolute cursor positioning,
+    # so camera/look movement must be sent as relative deltas.
+    relative: bool = False
+    # Allow negative deltas for relative moves via a dedicated field (Point
+    # enforces x/y >= 0 for absolute coordinates).
+    delta: tuple[int, int] | None = None
 
 
 class ActionResult(FrameworkModel):

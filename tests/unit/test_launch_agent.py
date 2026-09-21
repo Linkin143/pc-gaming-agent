@@ -60,10 +60,26 @@ def test_search_results_offers_card_click(agent):
     assert state["action"]["op"] == "click_text"
 
 
-def test_game_card_when_play_visible(agent):
+def test_game_card_requires_minecraft_and_play(agent):
+    """A real card shows BOTH 'minecraft' AND a Play/Launch button."""
     obs = _obs(titles=["Xbox"], text="minecraft for windows play installed")
     state = agent._match_state(obs)
     assert state is not None and state["name"] == "game_card"
+
+
+def test_xbox_home_play_tiles_do_not_false_match_game_card(agent):
+    """Xbox home page has 'Play' tiles but no Minecraft card -> NOT game_card."""
+    obs = _obs(titles=["Xbox"], text="home store library play halo forza")
+    state = agent._match_state(obs)
+    assert state is not None and state["name"] == "xbox_home"
+
+
+def test_blank_transition_screen_waits_not_searches(agent):
+    """After clicking Play the Xbox screen briefly blanks -> wait, don't search."""
+    obs = _obs(titles=["Xbox"], text="")
+    state = agent._match_state(obs)
+    assert state is not None and state["name"] == "game_launching"
+    assert state["action"]["op"] == "wait"
 
 
 def test_mc_title_screen_detected(agent):
@@ -89,17 +105,140 @@ def test_crosshair_is_authoritative_in_world(agent):
 
 
 def test_not_text_blocks_false_match(agent):
-    """xbox_home must NOT match once Play/Launch text appears (that's a card)."""
+    """A frame with minecraft + play is a card, not search_results/home."""
     obs = _obs(titles=["Xbox"], text="minecraft play launch")
     state = agent._match_state(obs)
     assert state is not None and state["name"] == "game_card"
 
 
-def test_no_match_returns_none_for_arbitration(agent):
-    # A blank Xbox-less, textless, crosshair-less frame matches only 'desktop'
-    # (window_absent XBOX). Force a genuinely unmatched case: xbox present but
-    # ambiguous text that trips no any_text list and is not a card.
-    obs = _obs(titles=["Xbox"], text="")
-    # 'xbox_home' requires not_text only -> it WILL match (empty text passes).
+def test_search_results_page_not_matched_as_game_card(agent):
+    """Regression (live-run stall): the Xbox search-results page shows
+    'minecraft' AND a 'Play with Game Pass' heading, which used to false-match
+    game_card and loop forever clicking a non-navigating heading. The
+    'search results for' text must route it to search_results instead."""
+    obs = _obs(
+        titles=["Xbox"],
+        text=("search results for minecraft  minecraft for windows  "
+              "minecraft launcher  play with game pass"),
+    )
     state = agent._match_state(obs)
-    assert state is not None and state["name"] == "xbox_home"
+    assert state is not None and state["name"] == "search_results"
+    # And it should try to open the real tile, never click the heading.
+    assert state["action"]["op"] == "click_text"
+    assert "minecraft for windows" in state["action"]["targets"]
+
+
+def test_game_pass_heading_excluded_from_play_click(agent):
+    """The game_card click must not target the 'Play with Game Pass' heading."""
+    game_card = next(s for s in agent._states if s["name"] == "game_card")
+    assert "with game pass" in game_card["action"]["exclude"]
+
+
+class _RecordingFinder:
+    """Fake ScreenFinder recording clicks/keys, with scriptable OCR hits."""
+
+    def __init__(self, hits: dict, region=None) -> None:
+        self._hits = hits          # text -> (x, y) or None
+        self.region = region
+        self.clicks: list[tuple[int, int]] = []
+        self.keys: list[str] = []
+
+    def find_text(self, query, **_kw):  # noqa: ANN001
+        return self._hits.get(query.lower())
+
+    def click_at(self, x, y, **_kw):  # noqa: ANN001
+        self.clicks.append((int(x), int(y)))
+
+    def press_enter(self):
+        self.keys.append("enter")
+
+    def click_text(self, query, **_kw):  # noqa: ANN001
+        hit = self._hits.get(query.lower())
+        if hit is not None:
+            self.clicks.append(tuple(hit))
+            return True
+        return False
+
+
+def _make_agent(config, finder):
+    return LaunchAgent(config=config, xbox=_Stub(), finder=finder, vision=_Stub())
+
+
+def test_click_world_selects_row_then_enters_not_top_nav(config):
+    """The bug fix: select the 'My World' row then Enter - never the top 'Play' tab."""
+    # OCR sees the "Worlds" header at y=150 and a top-nav "Play" tab at y=20.
+    finder = _RecordingFinder(hits={"worlds": (300, 150), "play": (915, 20)})
+    agent = _make_agent(config, finder)
+    agent._click_world()
+    # Clicked the world row (header_y + 90 = 240), NOT the top-nav play at y=20.
+    assert (300, 240) in finder.clicks
+    assert (915, 20) not in finder.clicks
+    # Confirmed entry with Enter (row was selected).
+    assert "enter" in finder.keys
+
+
+def test_click_world_prefers_play_world_button(config):
+    """When an explicit 'Play World' button exists, click it directly."""
+    finder = _RecordingFinder(hits={"worlds": (300, 150),
+                                    "play world": (500, 800),
+                                    "play": (915, 20)})
+    agent = _make_agent(config, finder)
+    agent._click_world()
+    assert (500, 800) in finder.clicks
+    assert (915, 20) not in finder.clicks
+
+
+def test_click_world_uses_vlm_named_world(config):
+    """When the VLM names the world, click that row by its label directly."""
+    finder = _RecordingFinder(hits={"my world": (400, 300), "worlds": (300, 150)})
+    agent = _make_agent(config, finder)
+    agent._click_world(vlm_hint="click the 'My World' row to enter it")
+    assert (400, 300) in finder.clicks
+    assert "enter" in finder.keys
+
+
+# ----------------------------- L1 OpenCV vote ----------------------------- #
+
+def test_opencv_classifies_menu_and_gameplay():
+    from core.models import VisualFeatures
+    from tools.vision.opencv_engine import classify_screen_state
+
+    menu = VisualFeatures(motion_score=0.005, ui_element_count=5,
+                          edge_density=0.2, brightness_mean=0.4)
+    state, conf = classify_screen_state(menu)
+    assert state == "menu" and conf > 0.0
+
+    gameplay = VisualFeatures(motion_score=0.15, center_complexity=0.2)
+    state, conf = classify_screen_state(gameplay)
+    assert state == "gameplay" and conf > 0.5
+
+    loading = VisualFeatures(motion_score=0.0, brightness_mean=0.02,
+                             edge_density=0.01)
+    state, _ = classify_screen_state(loading)
+    assert state == "loading"
+
+
+# ------------------------- L1 + L2 fusion verdict ------------------------- #
+
+def test_fusion_agreement_boosts_confidence(config):
+    """When OpenCV (menu->mc_title) and OCR (mc_title) agree, confidence rises."""
+    from core.models import VisualFeatures
+
+    agent = LaunchAgent(config=config, xbox=_Stub(), finder=_Stub(), vision=_Stub())
+    bundle = _obs(titles=["Minecraft"], text="play marketplace settings")
+    # Force an OpenCV 'menu' vote (maps to mc_title, same as the OCR match).
+    bundle.visual_features = VisualFeatures(motion_score=0.0, ui_element_count=6)
+    bundle.opencv_state, bundle.opencv_confidence = "menu", 0.55
+    agent._fuse_l1_l2(bundle)
+    assert bundle.fused_state == "mc_title"
+    assert bundle.signals_agree is True
+    assert bundle.fused_confidence > 0.8  # agreement bonus applied
+
+
+def test_fusion_ocr_only_when_opencv_unknown(config):
+    agent = LaunchAgent(config=config, xbox=_Stub(), finder=_Stub(), vision=_Stub())
+    bundle = _obs(titles=["Minecraft"], text="worlds create new my world")
+    bundle.opencv_state, bundle.opencv_confidence = "unknown", 0.2
+    agent._fuse_l1_l2(bundle)
+    assert bundle.fused_state == "world_select"
+    assert bundle.signals_agree is False

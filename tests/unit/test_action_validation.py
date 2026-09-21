@@ -22,6 +22,19 @@ def test_mouse_move_requires_position():
         agent.validate(plan)
 
 
+def test_relative_mouse_move_passes_with_delta():
+    """A relative look move carries a delta (not an absolute position) and is valid."""
+    agent = ActionAgent()
+    agent.validate(ActionPlan(action_type=ActionType.MOUSE_MOVE,
+                              relative=True, delta=(250, 0)))
+
+
+def test_relative_mouse_move_requires_delta():
+    agent = ActionAgent()
+    with pytest.raises(ActionValidationError):
+        agent.validate(ActionPlan(action_type=ActionType.MOUSE_MOVE, relative=True))
+
+
 def test_mouse_drag_requires_end_position():
     agent = ActionAgent()
     plan = ActionPlan(action_type=ActionType.MOUSE_DRAG, position=Point(x=5, y=5))

@@ -156,6 +156,13 @@ class GameAutomationEngine:
                 forced = override(structured.game_state)
                 if forced is not None:
                     structured.screen = forced
+                    # A pixel-truth override (e.g. Minecraft crosshair => GAMEPLAY)
+                    # is deterministic, so promote the confidence too. Otherwise the
+                    # low FUSED confidence (in-world frames have no OCR text and can
+                    # be misread by OpenCV) keeps the planner stuck on `observe`.
+                    if str(forced) == "gameplay":
+                        structured.overall_confidence = max(
+                            structured.overall_confidence, 0.92)
         iteration = int(state.get("iteration", 0)) + 1
         return {"structured": dump_structured(structured), "iteration": iteration,
                 "log": self._log_entry("update_state", iteration=iteration,

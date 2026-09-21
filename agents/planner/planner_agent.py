@@ -147,9 +147,17 @@ class PlannerAgent:
         edge_density = float(vf.get("edge_density", 0.0))
         brightness = float(vf.get("brightness_mean", 0.0))
         screen = state.screen
+        gs = state.game_state or {}
+        # The crosshair is deterministic pixel-truth: when it is visible we are
+        # unambiguously in-world, so we must NOT fall back to `observe` on a low
+        # fused confidence. In-world frames have no OCR text and OpenCV can misread
+        # the HUD as a menu, dragging fused confidence below the 0.45 threshold -
+        # which previously trapped the agent in an endless observe loop.
+        mc_crosshair = state.game == "minecraft" and bool(gs.get("crosshair_visible"))
 
         # 1) Unknown / low confidence -> observe (gather more evidence).
-        if screen == ScreenState.UNKNOWN or state.overall_confidence < 0.45:
+        if not mc_crosshair and (
+                screen == ScreenState.UNKNOWN or state.overall_confidence < 0.45):
             if "observe" in names:
                 return SkillIntent(skill="observe",
                                    reason="Screen unknown/low confidence; gathering evidence.",
@@ -172,8 +180,9 @@ class PlannerAgent:
                                    confidence=0.8, goal=user_goal)
 
         # 3b) Minecraft gameplay: decide from the pixel HUD (crosshair truth).
-        gs = state.game_state or {}
-        if state.game == "minecraft" and gs.get("crosshair_visible"):
+        #     `mc_crosshair`/`gs` were resolved above so this branch is reached
+        #     even when fused confidence is low (the crosshair is ground truth).
+        if mc_crosshair:
             mc = self._plan_minecraft_gameplay(gs, names, user_goal)
             if mc is not None:
                 return mc

@@ -177,6 +177,10 @@ launch_config:
   hard_cap_s: 900           # absolute safety net (15 min)
   poll_interval_s: 1.5
   confuse_limit: 3          # consecutive unmatched cycles before LLM/VLM help
+  # Every cycle fuses OpenCV (L1) + OCR/crosshair (L2). The VLM (L3) is called
+  # only when the fused confidence is below this OR L1/L2 disagree - so the VLM
+  # confirms/arbitrates ambiguous frames without adding latency to clear ones.
+  vlm_threshold: 0.55
   search_query: minecraft for windows
   window_xbox: XBOX
   window_game: Minecraft
@@ -233,11 +237,18 @@ launch_states:
     description: Minecraft game card open in the Xbox app with a Play/Launch button.
     detect:
       window_present: XBOX
-      any_text: ["play", "launch"]
+      all_text: ["minecraft"]      # the card must actually be showing Minecraft
+      any_text: ["play", "launch"] # AND a Play/Launch button must be present
+      # The search-results page ALSO shows "minecraft" + a "Play with Game Pass"
+      # heading, so it used to false-match this state and loop forever clicking a
+      # non-navigating heading. Block any screen that is still a results listing.
+      not_text: ["search results", "results for"]
     action:
       op: click_text
       targets: ["play", "launch", "resume"]
-      exclude: ["replay", "gameplay"]
+      # "with game pass" / "game pass" guard the section heading that is NOT a
+      # launch button; the others are unrelated words containing "play".
+      exclude: ["replay", "gameplay", "with game pass", "game pass"]
     done_when:
       window_present: Minecraft
 
@@ -246,19 +257,46 @@ launch_states:
     detect:
       window_present: XBOX
       any_text: ["minecraft"]
-      not_text: ["play", "launch", "marketplace"]
+      # game_card (above) now claims real game-card pages via its own not_text
+      # guard, so search_results no longer needs to exclude "play"/"launch"
+      # (which broke on the "Play with Game Pass" heading of the results page).
+      not_text: ["marketplace"]
     action:
       op: click_text
       targets: ["minecraft for windows", "minecraft launcher", "minecraft"]
-      exclude: ["legends", "dungeons", "education", "trial"]
+      exclude: ["legends", "dungeons", "education", "trial",
+                "search results", "results for"]
     done_when:
       any_text: ["play", "launch", "installed"]
 
-  - name: xbox_home
-    description: Xbox app is open on home/library; search not yet run.
+  - name: game_launching
+    description: >
+      Xbox app is on a transitional/blank screen (Minecraft is starting) - no
+      home content and no game card yet. Just wait and re-observe; do NOT start
+      a new search here (that was the old false-positive that looped back).
     detect:
       window_present: XBOX
-      not_text: ["play", "launch", "marketplace"]
+      # NOTE: "launch" is deliberately NOT excluded here - the Xbox startup
+      # splash literally reads "Launching XBOX" (contains "launch"), and we want
+      # this state to claim that transitional screen and wait rather than falling
+      # through to xbox_home and firing a premature search.
+      not_text: ["minecraft", "play", "marketplace",
+                 "store", "library", "home", "game pass"]
+    action:
+      op: wait
+      ms: 3000
+    done_when:
+      window_present: Minecraft
+
+  - name: xbox_home
+    description: >
+      General Xbox fallback - the app is open on some non-card screen (home,
+      library, store...). This is intentionally the LAST Xbox state and matches
+      any Xbox window that the specific states above did not claim, so we always
+      fall back to running a search. (The home page legitimately shows "Play" on
+      game tiles, so we do NOT filter on button text here.)
+    detect:
+      window_present: XBOX
     action:
       op: search
       query: minecraft for windows

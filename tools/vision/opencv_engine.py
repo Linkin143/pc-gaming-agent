@@ -19,6 +19,34 @@ _COLOR_BINS = [
 ]
 
 
+def classify_screen_state(vf: VisualFeatures) -> tuple[str, float]:
+    """Map deterministic OpenCV features to a coarse screen category + confidence.
+
+    This is the L1 (OpenCV) vote used by the launch/gameplay perception fusion.
+    It is intentionally game-agnostic and errs toward low confidence so OCR/VLM
+    can refine it. Returns one of: gameplay, loading, menu, unknown.
+
+    - High motion + busy centre  => gameplay (something is animating).
+    - Dark, structureless, static => loading (black/gen-world screen).
+    - Static + several UI rects   => menu (buttons/panels present).
+    """
+    motion = vf.motion_score
+    edges = vf.edge_density
+    brightness = vf.brightness_mean
+    center = vf.center_complexity
+    ui = vf.ui_element_count
+
+    if motion >= 0.06 and center >= 0.05:
+        return "gameplay", min(0.5 + motion, 0.9)
+    if brightness < 0.06 and edges < 0.03 and motion < 0.03:
+        return "loading", 0.7
+    if motion < 0.03 and (ui >= 3 or vf.text_region_density >= 0.08):
+        return "menu", 0.55
+    if motion < 0.03 and center >= 0.08:
+        return "gameplay", 0.5
+    return "unknown", 0.2
+
+
 class OpenCVEngine:
     """Wraps common OpenCV operations behind a structured interface."""
 

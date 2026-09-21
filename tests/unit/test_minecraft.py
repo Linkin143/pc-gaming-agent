@@ -85,6 +85,33 @@ def test_action_builder_move(mc_registry):
     assert plans[0].key == "w"
 
 
+def test_sprint_holds_w_not_shift(mc_registry):
+    """Sprint in Bedrock is HOLD W (auto-sprint), never Shift+W (that is sneak)."""
+    builder = MinecraftActionBuilder()
+    plans = builder.build(mc_registry.get("mc_sprint_forward"),
+                          SkillIntent(skill="mc_sprint_forward"),
+                          {"duration_ms": 600})
+    assert plans
+    assert str(plans[0].action_type) == "keyboard_hold"
+    assert plans[0].key == "w"
+    assert plans[0].keys is None  # not a Shift+W combo
+
+
+def test_look_around_uses_relative_delta(mc_registry):
+    """Look must send a RELATIVE mouse delta - Minecraft ignores absolute cursor
+    positioning, so the old absolute-offset move turned the camera by nothing."""
+    builder = MinecraftActionBuilder()
+    plans = builder.build(mc_registry.get("mc_look_around"),
+                          SkillIntent(skill="mc_look_around"),
+                          {"dx": 250, "dy": 0})
+    assert plans
+    plan = plans[0]
+    assert str(plan.action_type) == "mouse_move"
+    assert plan.relative is True
+    assert plan.delta == (250, 0)
+    assert plan.position is None  # no absolute coordinate
+
+
 def test_state_builder_classifies_minecraft(mc_registry):
     from agents.perception.state_agent import StateBuilder
     builder = StateBuilder(mc_registry.states)
