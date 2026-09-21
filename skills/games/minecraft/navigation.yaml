@@ -1,0 +1,160 @@
+# Minecraft menu navigation + in-world movement skills.
+skills:
+  - skill: mc_start_singleplayer
+    game: minecraft
+    category: game_specific
+    description: From the title screen, start/continue a singleplayer world.
+    preconditions:
+      - "state.screen == main_menu"
+    perception:
+      - screenshot
+      - ocr
+      - vision
+    parameters:
+      x:
+        type: integer
+        min: 0
+        required: false
+      y:
+        type: integer
+        min: 0
+        required: false
+    action_strategy: game_specific
+    expected_result: entering_world
+    verification:
+      expected_state: gameplay
+    verification_strategy: screen_transition
+    timeout_ms: 30000
+    retry:
+      max_attempts: 3
+      backoff_ms: 1500
+    recovery:
+      - reobserve
+      - escalate_vlm
+      - retry
+
+  - skill: mc_click_button
+    game: minecraft
+    category: game_specific
+    description: Click a menu button (by coordinate) or activate the focused one.
+    preconditions: []
+    perception:
+      - screenshot
+      - ocr
+    parameters:
+      x:
+        type: integer
+        min: 0
+        required: false
+      y:
+        type: integer
+        min: 0
+        required: false
+    action_strategy: game_specific
+    expected_result: button_clicked
+    verification_strategy: screen_transition
+    timeout_ms: 8000
+    retry:
+      max_attempts: 2
+      backoff_ms: 500
+    recovery:
+      - reobserve
+      - retry
+
+  - skill: mc_move
+    game: minecraft
+    category: game_specific
+    description: Move the player one bounded WASD burst in a direction.
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+    parameters:
+      direction:
+        type: string
+        choices: [forward, backward, left, right]
+        default: forward
+      duration_ms:
+        type: integer
+        min: 100
+        max: 1500
+        default: 400
+    action_strategy: game_specific
+    expected_result: moved
+    verification_strategy: none
+    timeout_ms: 3000
+    retry:
+      max_attempts: 1
+      backoff_ms: 0
+    recovery:
+      - reobserve
+
+  - skill: mc_sprint_forward
+    game: minecraft
+    category: game_specific
+    description: Sprint forward (Shift+W) for a bounded duration.
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+    parameters:
+      duration_ms:
+        type: integer
+        min: 200
+        max: 2000
+        default: 600
+    action_strategy: game_specific
+    expected_result: sprinted
+    verification_strategy: none
+    timeout_ms: 3000
+    retry:
+      max_attempts: 1
+      backoff_ms: 0
+    recovery:
+      - reobserve
+
+  - skill: mc_jump
+    game: minecraft
+    category: game_specific
+    description: Make the player jump (Space).
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: jumped
+    verification_strategy: none
+    timeout_ms: 2000
+    retry:
+      max_attempts: 1
+      backoff_ms: 0
+    recovery: []
+
+  - skill: mc_look
+    game: minecraft
+    category: game_specific
+    description: Look around by moving the mouse relative to screen centre.
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+    parameters:
+      dx:
+        type: integer
+        min: -400
+        max: 400
+        default: 0
+      dy:
+        type: integer
+        min: -300
+        max: 300
+        default: 0
+    action_strategy: game_specific
+    expected_result: looked
+    verification_strategy: none
+    timeout_ms: 2000
+    retry:
+      max_attempts: 1
+      backoff_ms: 0
+    recovery: []

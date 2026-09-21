@@ -1,0 +1,62 @@
+# Common low-level keyboard skills.
+skills:
+  - skill: press_key
+    category: common
+    description: Tap a single key once.
+    preconditions: []
+    perception: [screenshot]
+    parameters:
+      key: {type: string, required: true}
+    action_strategy: keyboard_tap
+    input: {type: keyboard}
+    expected_result: key_pressed
+    verification_strategy: none
+    timeout_ms: 2000
+    retry: {max_attempts: 1, backoff_ms: 50}
+    recovery: [retry]
+
+  - skill: hold_key
+    category: common
+    description: Hold a key down for a bounded duration.
+    preconditions: []
+    perception: [screenshot]
+    parameters:
+      key: {type: string, required: true}
+      duration_ms: {type: integer, min: 50, max: 2000, default: 300}
+    action_strategy: keyboard_hold
+    input: {type: keyboard}
+    expected_result: key_held
+    verification_strategy: none
+    timeout_ms: 3000
+    retry: {max_attempts: 1, backoff_ms: 50}
+    recovery: [retry]
+
+  - skill: release_key
+    category: common
+    description: Release a previously held key (anti-stuck safety).
+    preconditions: []
+    perception: []
+    parameters:
+      key: {type: string, required: true}
+    action_strategy: keyboard_release
+    input: {type: keyboard}
+    expected_result: key_released
+    verification_strategy: none
+    timeout_ms: 1000
+    retry: {max_attempts: 1, backoff_ms: 0}
+    recovery: []
+
+  - skill: key_combo
+    category: common
+    description: Press several keys simultaneously (e.g. Alt+F4).
+    preconditions: []
+    perception: [screenshot]
+    parameters:
+      keys: {type: string, required: true}
+    action_strategy: key_combo
+    input: {type: keyboard}
+    expected_result: combo_pressed
+    verification_strategy: none
+    timeout_ms: 2000
+    retry: {max_attempts: 1, backoff_ms: 50}
+    recovery: [retry]

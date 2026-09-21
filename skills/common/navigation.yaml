@@ -1,0 +1,95 @@
+# Common navigation skills shared across games (WASD by default).
+skills:
+  - skill: move_forward
+    category: common
+    description: Move the player forward (default key W).
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot]
+    parameters:
+      duration_ms: {type: integer, min: 50, max: 2000, default: 300}
+    action_strategy: keyboard_hold
+    input: {type: keyboard, key: w}
+    expected_result: player_moved_forward
+    verification_strategy: player_position_change
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 100}
+    recovery: [reobserve, retry]
+
+  - skill: move_backward
+    category: common
+    description: Move the player backward (default key S).
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot]
+    parameters:
+      duration_ms: {type: integer, min: 50, max: 2000, default: 300}
+    action_strategy: keyboard_hold
+    input: {type: keyboard, key: s}
+    expected_result: player_moved_backward
+    verification_strategy: player_position_change
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 100}
+    recovery: [reobserve, retry]
+
+  - skill: move_left
+    category: common
+    description: Move the player left (default key A).
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot]
+    parameters:
+      duration_ms: {type: integer, min: 50, max: 2000, default: 300}
+    action_strategy: keyboard_hold
+    input: {type: keyboard, key: a}
+    expected_result: player_moved_left
+    verification_strategy: player_position_change
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 100}
+    recovery: [reobserve, retry]
+
+  - skill: move_right
+    category: common
+    description: Move the player right (default key D).
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot]
+    parameters:
+      duration_ms: {type: integer, min: 50, max: 2000, default: 300}
+    action_strategy: keyboard_hold
+    input: {type: keyboard, key: d}
+    expected_result: player_moved_right
+    verification_strategy: player_position_change
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 100}
+    recovery: [reobserve, retry]
+
+  - skill: navigate_to
+    category: common
+    description: High-level navigation toward a named target (delegated to game).
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot, vision]
+    parameters:
+      target: {type: string, required: true}
+      max_steps: {type: integer, min: 1, max: 50, default: 10}
+    action_strategy: game_specific
+    expected_result: reached_target
+    verification_strategy: screen_transition
+    timeout_ms: 15000
+    retry: {max_attempts: 3, backoff_ms: 250}
+    recovery: [reobserve, recalculate_target, retry, return_to_known_state]
+
+  - skill: wait
+    category: common
+    description: Wait for a bounded amount of time without sending input.
+    preconditions: []
+    perception: [screenshot]
+    parameters:
+      duration_ms: {type: integer, min: 50, max: 10000, default: 500}
+    action_strategy: wait
+    expected_result: time_elapsed
+    verification_strategy: none
+    timeout_ms: 11000
+    retry: {max_attempts: 0, backoff_ms: 0}
+    recovery: []

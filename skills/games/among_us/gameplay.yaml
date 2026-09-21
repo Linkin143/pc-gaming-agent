@@ -1,0 +1,72 @@
+# Among Us gameplay skills (game-specific).
+skills:
+  - skill: complete_task
+    game: among_us
+    category: game_specific
+    description: Complete the currently detected task.
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot, ocr, vision]
+    parameters:
+      task_name: {type: string, required: false}
+    action_strategy: game_specific
+    expected_result: task_progress_increased
+    verification: {expected_state: gameplay, expected_task_progress_change: true}
+    verification_strategy: task_progress
+    timeout_ms: 20000
+    retry: {max_attempts: 3, backoff_ms: 300}
+    recovery: [reobserve, recalculate_target, retry]
+
+  - skill: report_body
+    game: among_us
+    category: game_specific
+    description: Report a dead body (default key R).
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot, ocr]
+    parameters:
+      key: {type: string, default: r}
+    action_strategy: keyboard_tap
+    input: {type: keyboard, key: r}
+    expected_result: meeting_started
+    verification: {expected_state: meeting}
+    verification_strategy: screen_transition
+    timeout_ms: 5000
+    retry: {max_attempts: 2, backoff_ms: 200}
+    recovery: [reobserve, escalate_vlm, retry]
+
+  - skill: use_vent
+    game: among_us
+    category: game_specific
+    description: Enter or exit a vent (impostor only, default key E).
+    preconditions:
+      - "state.screen == gameplay"
+      - "state.game_state.is_impostor == true"
+    perception: [screenshot, ocr]
+    parameters:
+      key: {type: string, default: e}
+    action_strategy: keyboard_tap
+    input: {type: keyboard, key: e}
+    expected_result: vent_toggled
+    verification_strategy: screen_transition
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 150}
+    recovery: [reobserve, retry]
+
+  - skill: vote_player
+    game: among_us
+    category: game_specific
+    description: Cast a vote during voting (or skip).
+    preconditions:
+      - "state.screen == vote"
+    perception: [screenshot, ocr, vision]
+    parameters:
+      target: {type: string, required: false}
+      skip: {type: boolean, default: true}
+    action_strategy: game_specific
+    expected_result: vote_cast
+    verification: {expected_state: gameplay}
+    verification_strategy: screen_transition
+    timeout_ms: 8000
+    retry: {max_attempts: 2, backoff_ms: 300}
+    recovery: [reobserve, escalate_vlm, retry]

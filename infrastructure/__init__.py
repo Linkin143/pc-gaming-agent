@@ -1,0 +1,1 @@
+"""Checkpointing and persistence infrastructure."""

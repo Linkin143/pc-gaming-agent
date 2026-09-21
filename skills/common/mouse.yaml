@@ -1,0 +1,71 @@
+# Common mouse skills.
+skills:
+  - skill: mouse_move
+    category: common
+    description: Move the mouse cursor to an absolute screen coordinate.
+    preconditions: []
+    perception: [screenshot]
+    parameters:
+      x: {type: integer, min: 0, required: true}
+      y: {type: integer, min: 0, required: true}
+      duration_ms: {type: integer, min: 0, max: 2000, default: 120}
+    action_strategy: mouse_move
+    input: {type: mouse}
+    expected_result: cursor_moved
+    verification_strategy: none
+    timeout_ms: 3000
+    retry: {max_attempts: 1, backoff_ms: 50}
+    recovery: [retry]
+
+  - skill: click
+    category: common
+    description: Click at an absolute screen coordinate.
+    preconditions: []
+    perception: [screenshot]
+    parameters:
+      x: {type: integer, min: 0, required: true}
+      y: {type: integer, min: 0, required: true}
+      button: {type: string, choices: [left, right, middle], default: left}
+    action_strategy: mouse_click
+    input: {type: mouse, button: left}
+    expected_result: clicked
+    verification_strategy: screen_transition
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 150}
+    recovery: [reobserve, retry]
+
+  - skill: double_click
+    category: common
+    description: Double-click at an absolute screen coordinate.
+    preconditions: []
+    perception: [screenshot]
+    parameters:
+      x: {type: integer, min: 0, required: true}
+      y: {type: integer, min: 0, required: true}
+      button: {type: string, choices: [left, right, middle], default: left}
+    action_strategy: mouse_double_click
+    input: {type: mouse, button: left}
+    expected_result: double_clicked
+    verification_strategy: screen_transition
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 150}
+    recovery: [reobserve, retry]
+
+  - skill: mouse_drag
+    category: common
+    description: Press, move, and release the mouse between two coordinates.
+    preconditions: []
+    perception: [screenshot]
+    parameters:
+      x: {type: integer, min: 0, required: true}
+      y: {type: integer, min: 0, required: true}
+      end_x: {type: integer, min: 0, required: true}
+      end_y: {type: integer, min: 0, required: true}
+      duration_ms: {type: integer, min: 0, max: 3000, default: 300}
+    action_strategy: mouse_drag
+    input: {type: mouse, button: left}
+    expected_result: dragged
+    verification_strategy: none
+    timeout_ms: 4000
+    retry: {max_attempts: 1, backoff_ms: 150}
+    recovery: [reobserve, retry]

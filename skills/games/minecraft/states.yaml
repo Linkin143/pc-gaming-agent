@@ -1,0 +1,57 @@
+# Minecraft for Windows screen-state definitions and transitions.
+# The perception/state builder uses `keywords` (matched against OCR text) to
+# classify the current screen.
+game: minecraft
+
+states:
+  xbox_app:
+    screen: xbox_app
+    keywords: ["xbox", "game pass", "search", "library", "store"]
+    description: The Xbox PC app before the game launches.
+  game_loading:
+    screen: game_loading
+    keywords: ["loading", "building terrain", "generating world", "mojang"]
+    description: Minecraft is starting or a world is loading.
+  main_menu:
+    screen: main_menu
+    keywords: ["play", "singleplayer", "multiplayer", "settings", "marketplace"]
+    description: Minecraft title / main menu.
+  world_select:
+    screen: menu
+    keywords: ["create new world", "worlds", "play selected world", "friends"]
+    description: The world/play selection screen.
+  gameplay:
+    screen: gameplay
+    keywords: ["health", "hunger", "hotbar", "crafting", "coordinates"]
+    description: In-world gameplay (player can move/mine/build).
+  inventory:
+    screen: menu
+    keywords: ["crafting", "inventory", "survival inventory", "recipe book"]
+    description: The inventory / crafting screen is open.
+  pause_menu:
+    screen: menu
+    keywords: ["game menu", "resume game", "back to game", "quit to title"]
+    description: The pause menu is open.
+
+transitions:
+  - from: xbox_app
+    to: game_loading
+    trigger: play_clicked
+  - from: game_loading
+    to: main_menu
+    trigger: game_started
+  - from: main_menu
+    to: world_select
+    trigger: play_clicked
+  - from: world_select
+    to: gameplay
+    trigger: world_loaded
+  - from: gameplay
+    to: inventory
+    trigger: open_inventory
+  - from: gameplay
+    to: pause_menu
+    trigger: escape
+  - from: pause_menu
+    to: gameplay
+    trigger: resume

@@ -1,0 +1,63 @@
+# Minecraft perception skills (observation helpers, no physical input).
+skills:
+  - skill: mc_detect_title_screen
+    game: minecraft
+    category: game_specific
+    description: Detect whether the Minecraft title/main menu is showing.
+    preconditions: []
+    perception:
+      - screenshot
+      - ocr
+    parameters: {}
+    action_strategy: observe
+    expected_result: title_state_known
+    verification_strategy: text_present
+    timeout_ms: 5000
+    retry:
+      max_attempts: 2
+      backoff_ms: 200
+    recovery:
+      - reobserve
+      - escalate_vlm
+
+  - skill: mc_detect_world_loaded
+    game: minecraft
+    category: game_specific
+    description: Detect whether an in-world HUD (health/hotbar) is visible.
+    preconditions: []
+    perception:
+      - screenshot
+      - ocr
+      - vision
+    parameters: {}
+    action_strategy: observe
+    expected_result: world_state_known
+    verification_strategy: text_present
+    timeout_ms: 6000
+    retry:
+      max_attempts: 2
+      backoff_ms: 200
+    recovery:
+      - reobserve
+      - escalate_vlm
+
+  - skill: mc_detect_menu_buttons
+    game: minecraft
+    category: game_specific
+    description: Read visible menu buttons (Play, Singleplayer, Settings, etc.).
+    preconditions: []
+    perception:
+      - screenshot
+      - ocr
+      - vision
+    parameters: {}
+    action_strategy: observe
+    expected_result: buttons_read
+    verification_strategy: text_present
+    timeout_ms: 6000
+    retry:
+      max_attempts: 2
+      backoff_ms: 200
+    recovery:
+      - reobserve
+      - escalate_vlm

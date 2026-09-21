@@ -1,0 +1,43 @@
+# Common verification skills (evaluate state; no input).
+skills:
+  - skill: verify_state
+    category: common
+    description: Verify the current screen equals an expected state.
+    preconditions: []
+    perception: [screenshot, ocr]
+    parameters:
+      expected_state: {type: string, required: true}
+    action_strategy: observe
+    expected_result: state_matches
+    verification_strategy: state_equals
+    timeout_ms: 5000
+    retry: {max_attempts: 1, backoff_ms: 0}
+    recovery: [reobserve]
+
+  - skill: verify_text_present
+    category: common
+    description: Verify a piece of expected text is visible on screen.
+    preconditions: []
+    perception: [screenshot, ocr]
+    parameters:
+      text: {type: string, required: true}
+    action_strategy: observe
+    expected_result: text_present
+    verification_strategy: text_present
+    timeout_ms: 5000
+    retry: {max_attempts: 2, backoff_ms: 100}
+    recovery: [reobserve, rerun_ocr, escalate_vlm]
+
+  - skill: verify_position_change
+    category: common
+    description: Verify the player's position changed after a movement action.
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot, opencv]
+    parameters: {}
+    action_strategy: observe
+    expected_result: position_changed
+    verification_strategy: player_position_change
+    timeout_ms: 5000
+    retry: {max_attempts: 1, backoff_ms: 0}
+    recovery: [reobserve, rerun_vision]

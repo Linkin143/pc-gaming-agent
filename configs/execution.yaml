@@ -1,0 +1,9 @@
+# Execution safety controls and default action timings (milliseconds).
+require_foreground: true
+default_tap_ms: 60
+default_hold_ms: 300
+min_hold_ms: 50
+max_hold_ms: 2000
+mouse_move_duration_ms: 120
+emergency_stop_hotkey: esc+esc+esc
+dry_run: false

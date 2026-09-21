@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Env / secrets
+.env
+
+# Runtime artifacts
+screenshots/*
+logs/*
+reports/*
+!screenshots/.gitkeep
+!logs/.gitkeep
+!reports/.gitkeep
+
+*.sqlite
+.pytest_cache/

@@ -1,0 +1,63 @@
+# Common interaction skills.
+skills:
+  - skill: interact
+    category: common
+    description: Interact with the nearest object/prompt (default key E).
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot, ocr]
+    parameters:
+      key: {type: string, default: e}
+    action_strategy: keyboard_tap
+    input: {type: keyboard, key: e}
+    expected_result: interaction_triggered
+    verification_strategy: screen_transition
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 150}
+    recovery: [reobserve, retry]
+
+  - skill: use_item
+    category: common
+    description: Use the active item (default key F).
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot]
+    parameters:
+      key: {type: string, default: f}
+    action_strategy: keyboard_tap
+    input: {type: keyboard, key: f}
+    expected_result: item_used
+    verification_strategy: screen_transition
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 150}
+    recovery: [reobserve, retry]
+
+  - skill: open_menu
+    category: common
+    description: Open the in-game menu (default Escape).
+    preconditions: []
+    perception: [screenshot, ocr]
+    parameters:
+      key: {type: string, default: esc}
+    action_strategy: keyboard_tap
+    input: {type: keyboard, key: esc}
+    expected_result: menu_opened
+    verification_strategy: menu_open
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 150}
+    recovery: [reobserve, retry]
+
+  - skill: close_menu
+    category: common
+    description: Close the current menu (default Escape).
+    preconditions: []
+    perception: [screenshot, ocr]
+    parameters:
+      key: {type: string, default: esc}
+    action_strategy: keyboard_tap
+    input: {type: keyboard, key: esc}
+    expected_result: menu_closed
+    verification_strategy: menu_close
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 150}
+    recovery: [reobserve, retry]

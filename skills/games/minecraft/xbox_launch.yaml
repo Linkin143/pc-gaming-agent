@@ -1,0 +1,275 @@
+# Minecraft launch skills - the pre-game Xbox app flow.
+# These are game_specific desktop skills; the desktop layer (winapp.py) performs
+# the actual UIA3 actions. They exist so the flow is skill-driven and logged.
+skills:
+  - skill: xbox_open_app
+    game: minecraft
+    category: game_specific
+    description: Launch the Xbox PC application.
+    preconditions: []
+    perception:
+      - screenshot
+      - ocr
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: xbox_app_open
+    verification:
+      expected_state: xbox_app
+    verification_strategy: text_present
+    timeout_ms: 45000
+    retry:
+      max_attempts: 2
+      backoff_ms: 2000
+    recovery:
+      - reobserve
+      - retry
+
+  - skill: xbox_maximize
+    game: minecraft
+    category: game_specific
+    description: Maximise the Xbox app window so all controls are visible.
+    preconditions:
+      - "state.screen == xbox_app"
+    perception:
+      - screenshot
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: window_maximized
+    verification_strategy: none
+    timeout_ms: 6000
+    retry:
+      max_attempts: 2
+      backoff_ms: 500
+    recovery:
+      - retry
+
+  - skill: xbox_search_game
+    game: minecraft
+    category: game_specific
+    description: Search the Xbox app for "Minecraft for Windows".
+    preconditions:
+      - "state.screen == xbox_app"
+    perception:
+      - screenshot
+      - ocr
+    parameters:
+      query:
+        type: string
+        default: Minecraft for Windows
+    action_strategy: game_specific
+    expected_result: results_shown
+    verification_strategy: text_present
+    timeout_ms: 10000
+    retry:
+      max_attempts: 2
+      backoff_ms: 1000
+    recovery:
+      - reobserve
+      - retry
+
+  - skill: xbox_select_installed_game
+    game: minecraft
+    category: game_specific
+    description: Click the installed Minecraft entry and open its game card.
+    preconditions:
+      - "state.screen == xbox_app"
+    perception:
+      - screenshot
+      - ocr
+      - vision
+    parameters:
+      name:
+        type: string
+        default: Minecraft
+    action_strategy: game_specific
+    expected_result: game_card_open
+    verification_strategy: text_present
+    timeout_ms: 10000
+    retry:
+      max_attempts: 3
+      backoff_ms: 1000
+    recovery:
+      - reobserve
+      - escalate_vlm
+      - retry
+
+  - skill: xbox_click_play
+    game: minecraft
+    category: game_specific
+    description: Tap the Play/Launch button on the Minecraft game card.
+    preconditions:
+      - "state.screen == xbox_app"
+    perception:
+      - screenshot
+      - ocr
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: game_launching
+    verification:
+      expected_state: game_loading
+    verification_strategy: screen_transition
+    timeout_ms: 20000
+    retry:
+      max_attempts: 3
+      backoff_ms: 2000
+    recovery:
+      - reobserve
+      - escalate_vlm
+      - retry
+
+  - skill: xbox_launch_minecraft
+    game: minecraft
+    category: game_specific
+    description: >
+      Full launch macro - open Xbox, maximise, search, select installed game,
+      open card, and click Play, then wait for the game window.
+    preconditions: []
+    perception:
+      - screenshot
+      - ocr
+      - vision
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: minecraft_launched
+    verification:
+      expected_state: main_menu
+    verification_strategy: screen_transition
+    timeout_ms: 120000
+    retry:
+      max_attempts: 2
+      backoff_ms: 3000
+    recovery:
+      - reobserve
+      - escalate_vlm
+      - retry
+      - return_to_known_state
+
+# ==================================================================== #
+# DECLARATIVE LAUNCH STATE MACHINE (read by agents/launch/launch_agent.py)
+#
+# The launch is NOT a fixed sequence of timed steps. Every iteration the
+# LaunchAgent captures the live screen, runs OpenCV (crosshair) + OCR, and
+# picks the FIRST state below whose `detect` conditions all match the real
+# screen. It then performs that state's `action` (locating click targets via
+# OCR at run time, never hard-coded pixels) and re-observes. Slow app launch
+# or menu rendering simply means `detect` keeps matching the same state until
+# the screen actually changes - no blind sleeps.
+#
+# detect / done_when condition keys (all optional; ALL listed must hold):
+#   window_present : substring that must appear in a visible window title
+#   window_absent  : substring that must NOT appear in any window title
+#   any_text       : list; at least ONE must be in the on-screen OCR text
+#   all_text       : list; ALL must be present in the OCR text
+#   not_text       : list; NONE may be present in the OCR text
+#   crosshair      : true/false - MinecraftVision pixel crosshair (in-world)
+#
+# action.op values: launch_xbox | search | click_text | click_world | wait | done
+# When the agent cannot match ANY state for `confuse_limit` cycles it escalates
+# to the VLM/LLM to classify the frame and decide (screen is the source of
+# truth; the LLM only arbitrates genuine ambiguity).
+# ==================================================================== #
+launch_config:
+  # Timing is PROGRESS-based, not a fixed schedule. `stall_timeout_s` is the
+  # only real limit: the launch aborts ONLY if no state transition happens for
+  # this many seconds. A slow-but-advancing launch is never killed. OCR is
+  # warmed up before the timer starts so its ~40-50s cold-start is free.
+  stall_timeout_s: 180      # give up only after this long with NO progress
+  hard_cap_s: 900           # absolute safety net (15 min)
+  poll_interval_s: 1.5
+  confuse_limit: 3          # consecutive unmatched cycles before LLM/VLM help
+  search_query: minecraft for windows
+  window_xbox: XBOX
+  window_game: Minecraft
+
+# States are evaluated top-to-bottom; the FIRST whose `detect` fully matches
+# wins. They are therefore ordered MOST-SPECIFIC / most-authoritative first:
+# the pixel crosshair (in-world truth) -> Minecraft menu screens -> Xbox app
+# screens -> the desktop fallback last. This ordering is what makes detection
+# unambiguous - e.g. a running Minecraft never falls through to `desktop`.
+launch_states:
+  - name: in_world
+    description: Crosshair visible - we are in the game world (terminal, wins over all).
+    detect:
+      crosshair: true
+    action:
+      op: done
+
+  - name: loading
+    description: A world is loading; wait and re-observe.
+    detect:
+      window_present: Minecraft
+      any_text: ["loading", "generating", "building terrain", "locating"]
+      crosshair: false
+    action:
+      op: wait
+      ms: 3000
+    done_when:
+      crosshair: true
+
+  - name: world_select
+    description: World-select screen - choose or create a world.
+    detect:
+      window_present: Minecraft
+      any_text: ["create new", "worlds", "play world", "friends"]
+      crosshair: false
+    action:
+      op: click_world
+    done_when:
+      crosshair: true
+
+  - name: mc_title
+    description: Minecraft (Bedrock) title screen - Marketplace/Play visible.
+    detect:
+      window_present: Minecraft
+      any_text: ["marketplace", "singleplayer", "play"]
+      crosshair: false
+    action:
+      op: click_text
+      targets: ["play"]
+    done_when:
+      any_text: ["create new", "worlds", "friends", "play world"]
+
+  - name: game_card
+    description: Minecraft game card open in the Xbox app with a Play/Launch button.
+    detect:
+      window_present: XBOX
+      any_text: ["play", "launch"]
+    action:
+      op: click_text
+      targets: ["play", "launch", "resume"]
+      exclude: ["replay", "gameplay"]
+    done_when:
+      window_present: Minecraft
+
+  - name: search_results
+    description: Search returned; the Minecraft card is visible but not opened.
+    detect:
+      window_present: XBOX
+      any_text: ["minecraft"]
+      not_text: ["play", "launch", "marketplace"]
+    action:
+      op: click_text
+      targets: ["minecraft for windows", "minecraft launcher", "minecraft"]
+      exclude: ["legends", "dungeons", "education", "trial"]
+    done_when:
+      any_text: ["play", "launch", "installed"]
+
+  - name: xbox_home
+    description: Xbox app is open on home/library; search not yet run.
+    detect:
+      window_present: XBOX
+      not_text: ["play", "launch", "marketplace"]
+    action:
+      op: search
+      query: minecraft for windows
+    done_when:
+      any_text: ["minecraft", "results", "games"]
+
+  - name: desktop
+    description: Neither the Xbox app nor Minecraft is open yet (fallback).
+    detect:
+      window_absent: ["XBOX", "Minecraft"]
+    action:
+      op: launch_xbox
+    done_when:
+      window_present: XBOX

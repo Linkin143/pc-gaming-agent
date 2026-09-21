@@ -1,0 +1,134 @@
+# Minecraft in-world gameplay skills.
+skills:
+  - skill: mc_mine_block
+    game: minecraft
+    category: game_specific
+    description: Mine/break the block the player is looking at (hold left click).
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+      - vision
+    parameters:
+      duration_ms:
+        type: integer
+        min: 200
+        max: 3000
+        default: 700
+    action_strategy: game_specific
+    expected_result: block_mined
+    verification_strategy: none
+    timeout_ms: 4000
+    retry:
+      max_attempts: 2
+      backoff_ms: 200
+    recovery:
+      - reobserve
+      - retry
+
+  - skill: mc_place_block
+    game: minecraft
+    category: game_specific
+    description: Place the currently held block (right click).
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: block_placed
+    verification_strategy: none
+    timeout_ms: 3000
+    retry:
+      max_attempts: 2
+      backoff_ms: 150
+    recovery:
+      - reobserve
+      - retry
+
+  - skill: mc_attack
+    game: minecraft
+    category: game_specific
+    description: Attack/hit (left click) - mobs or to break quickly.
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: attacked
+    verification_strategy: none
+    timeout_ms: 3000
+    retry:
+      max_attempts: 1
+      backoff_ms: 0
+    recovery: []
+
+  - skill: mc_select_hotbar
+    game: minecraft
+    category: game_specific
+    description: Select a hotbar slot (1-9).
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+    parameters:
+      slot:
+        type: integer
+        min: 1
+        max: 9
+        default: 1
+    action_strategy: game_specific
+    expected_result: hotbar_selected
+    verification_strategy: none
+    timeout_ms: 2000
+    retry:
+      max_attempts: 1
+      backoff_ms: 0
+    recovery: []
+
+  - skill: mc_open_inventory
+    game: minecraft
+    category: game_specific
+    description: Open the inventory (E).
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+      - ocr
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: inventory_open
+    verification:
+      expected_state: inventory
+    verification_strategy: screen_transition
+    timeout_ms: 3000
+    retry:
+      max_attempts: 2
+      backoff_ms: 200
+    recovery:
+      - reobserve
+      - retry
+
+  - skill: mc_pause
+    game: minecraft
+    category: game_specific
+    description: Open the pause / game menu (Escape).
+    preconditions:
+      - "state.screen == gameplay"
+    perception:
+      - screenshot
+      - ocr
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: paused
+    verification:
+      expected_state: pause_menu
+    verification_strategy: screen_transition
+    timeout_ms: 3000
+    retry:
+      max_attempts: 2
+      backoff_ms: 200
+    recovery:
+      - reobserve
+      - retry

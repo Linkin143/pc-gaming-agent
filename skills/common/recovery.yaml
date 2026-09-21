@@ -1,0 +1,57 @@
+# Common recovery skills.
+skills:
+  - skill: recover
+    category: common
+    description: Generic recovery entrypoint; runs the recovery pipeline.
+    preconditions: []
+    perception: [screenshot, opencv, ocr]
+    parameters:
+      strategy: {type: string, required: false}
+    action_strategy: observe
+    expected_result: recovered
+    verification_strategy: none
+    timeout_ms: 8000
+    retry: {max_attempts: 1, backoff_ms: 0}
+    recovery: [reobserve, rebuild_state, escalate_vlm]
+
+  - skill: reobserve
+    category: common
+    description: Capture a fresh screenshot and rebuild perception.
+    preconditions: []
+    perception: [screenshot, opencv, ocr]
+    parameters: {}
+    action_strategy: observe
+    expected_result: state_rebuilt
+    verification_strategy: none
+    timeout_ms: 6000
+    retry: {max_attempts: 2, backoff_ms: 100}
+    recovery: [escalate_vlm]
+
+  - skill: replan
+    category: common
+    description: Force the planner to re-evaluate from the current state.
+    preconditions: []
+    perception: []
+    parameters: {}
+    action_strategy: observe
+    expected_result: replanned
+    verification_strategy: none
+    timeout_ms: 3000
+    retry: {max_attempts: 1, backoff_ms: 0}
+    recovery: []
+
+  - skill: return_to_known_state
+    category: common
+    description: Navigate back to a known-safe state via Escape.
+    preconditions: []
+    perception: [screenshot, ocr]
+    parameters:
+      key: {type: string, default: esc}
+      presses: {type: integer, min: 1, max: 5, default: 1}
+    action_strategy: keyboard_tap
+    input: {type: keyboard, key: esc}
+    expected_result: known_state_reached
+    verification_strategy: screen_transition
+    timeout_ms: 8000
+    retry: {max_attempts: 2, backoff_ms: 250}
+    recovery: [reobserve, escalate_vlm]

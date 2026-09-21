@@ -1,0 +1,31 @@
+# Among Us perception skills (game-specific observation helpers).
+skills:
+  - skill: detect_room
+    game: among_us
+    category: game_specific
+    description: Identify the room the player is currently in.
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot, ocr, vision]
+    parameters: {}
+    action_strategy: observe
+    expected_result: room_identified
+    verification_strategy: text_present
+    timeout_ms: 5000
+    retry: {max_attempts: 2, backoff_ms: 100}
+    recovery: [reobserve, escalate_vlm]
+
+  - skill: detect_vote_panel
+    game: among_us
+    category: game_specific
+    description: Detect and read the voting panel.
+    preconditions:
+      - "state.screen == vote"
+    perception: [screenshot, ocr, vision]
+    parameters: {}
+    action_strategy: observe
+    expected_result: vote_panel_read
+    verification_strategy: text_present
+    timeout_ms: 6000
+    retry: {max_attempts: 2, backoff_ms: 150}
+    recovery: [reobserve, escalate_vlm]

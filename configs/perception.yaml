@@ -1,0 +1,8 @@
+# Perception thresholds and escalation policy.
+ocr_confidence_threshold: 0.75
+vision_confidence_threshold: 0.70
+change_detection_threshold: 0.02
+enable_vlm: true
+vlm_escalation_confidence: 0.6
+ocr_language: en
+cache_ttl_seconds: 2.0

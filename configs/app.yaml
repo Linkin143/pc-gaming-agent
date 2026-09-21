@@ -1,0 +1,14 @@
+# Application-level configuration. Environment variables (PCGAF_*) override these.
+game: minecraft
+max_iterations: 200
+max_recovery_attempts: 3
+log_level: INFO
+log_json: true
+
+llm:
+  provider: anthropic     # openai | anthropic
+  planner_model: claude-haiku-4-5-20251001      # fast/cheap for skill planning
+  vlm_model: claude-sonnet-5         # vision-capable for scene analysis
+  temperature: 0.0
+  max_tokens: 1024
+  request_timeout_s: 60.0

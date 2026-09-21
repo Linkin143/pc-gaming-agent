@@ -1,0 +1,44 @@
+# Common perception skills (observe; no physical input).
+skills:
+  - skill: observe
+    category: common
+    description: Capture and interpret the current screen to refresh state.
+    preconditions: []
+    perception: [screenshot, opencv, ocr]
+    parameters: {}
+    action_strategy: observe
+    expected_result: state_refreshed
+    verification_strategy: none
+    timeout_ms: 5000
+    retry: {max_attempts: 2, backoff_ms: 100}
+    recovery: [reobserve, escalate_vlm]
+
+  - skill: capture_screen
+    category: common
+    description: Capture the screen without full interpretation.
+    preconditions: []
+    perception: [screenshot]
+    parameters:
+      region: {type: string, required: false}
+    action_strategy: observe
+    expected_result: screenshot_captured
+    verification_strategy: none
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 100}
+    recovery: [retry]
+
+  - skill: wait_for_state
+    category: common
+    description: Repeatedly observe until a target screen state is reached.
+    preconditions: []
+    perception: [screenshot, ocr]
+    parameters:
+      target_state: {type: string, required: true}
+      poll_ms: {type: integer, min: 100, max: 5000, default: 500}
+      max_wait_ms: {type: integer, min: 500, max: 60000, default: 10000}
+    action_strategy: observe
+    expected_result: target_state_reached
+    verification_strategy: state_equals
+    timeout_ms: 61000
+    retry: {max_attempts: 1, backoff_ms: 0}
+    recovery: [reobserve, escalate_vlm]

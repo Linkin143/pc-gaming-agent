@@ -1,0 +1,39 @@
+# Among Us navigation skills (game-specific).
+skills:
+  - skill: navigate_to_room
+    game: among_us
+    category: game_specific
+    description: Navigate the player toward a named room (e.g. Electrical).
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot, vision, ocr]
+    parameters:
+      target:
+        type: string
+        required: true
+        choices: [Cafeteria, Weapons, Navigation, O2, Shields, Communications,
+                  Storage, Admin, Electrical, LowerEngine, UpperEngine,
+                  Security, Reactor, MedBay]
+      step_duration_ms: {type: integer, min: 100, max: 800, default: 350}
+    action_strategy: game_specific
+    expected_result: reached_room
+    verification_strategy: player_position_change
+    timeout_ms: 20000
+    retry: {max_attempts: 3, backoff_ms: 250}
+    recovery: [reobserve, recalculate_target, retry, return_to_known_state]
+
+  - skill: navigate_to_task
+    game: among_us
+    category: game_specific
+    description: Navigate toward the next incomplete task location.
+    preconditions:
+      - "state.screen == gameplay"
+    perception: [screenshot, vision, ocr]
+    parameters:
+      step_duration_ms: {type: integer, min: 100, max: 800, default: 350}
+    action_strategy: game_specific
+    expected_result: reached_task_location
+    verification_strategy: player_position_change
+    timeout_ms: 20000
+    retry: {max_attempts: 3, backoff_ms: 250}
+    recovery: [reobserve, recalculate_target, retry]

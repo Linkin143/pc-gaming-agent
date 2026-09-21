@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pc-gaming-agent"
+version = "1.0.0"
+description = "Multi-agentic AI framework for automating Windows PC games via the Xbox PC app."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[project.scripts]
+pc-gaming-agent = "main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "live: tests that require a real desktop/game (skipped by default).",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,25 @@
+# Among Us screen-state definitions.
+game: among_us
+
+states:
+  main_menu:
+    screen: main_menu
+    keywords: ["online", "local", "how to play", "freeplay"]
+  lobby:
+    screen: lobby
+    keywords: ["lobby", "start", "code", "customize", "players"]
+  gameplay:
+    screen: gameplay
+    keywords: ["use", "report", "map", "tasks", "sabotage"]
+  task_panel:
+    screen: menu
+    keywords: ["download", "upload", "swipe card", "align", "calibrate"]
+  meeting:
+    screen: menu
+    keywords: ["emergency meeting", "dead body reported", "discuss"]
+  vote:
+    screen: menu
+    keywords: ["skip vote", "confirm", "votes", "proceed"]
+  results:
+    screen: results
+    keywords: ["victory", "defeat", "crewmates win", "impostors win"]

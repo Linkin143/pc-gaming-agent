@@ -1,0 +1,118 @@
+# Minecraft gameplay-mission skills. These express a survival Day-1 loop that the
+# planner selects from, using pixel-truth state (crosshair, health, block hint).
+skills:
+  - skill: mc_look_around
+    game: minecraft
+    category: game_specific
+    description: Turn the view to scan the surroundings (relative mouse move).
+    preconditions:
+      - "state.game_state.crosshair_visible == true"
+    perception: [screenshot, vision]
+    parameters:
+      dx: {type: integer, min: -600, max: 600, default: 250}
+      dy: {type: integer, min: -300, max: 300, default: 0}
+    action_strategy: game_specific
+    expected_result: view_turned
+    verification_strategy: none
+    timeout_ms: 2500
+    retry: {max_attempts: 1, backoff_ms: 0}
+    recovery: [reobserve]
+
+  - skill: mc_approach
+    game: minecraft
+    category: game_specific
+    description: Walk forward a short bounded burst to approach what is ahead.
+    preconditions:
+      - "state.game_state.crosshair_visible == true"
+    perception: [screenshot, vision]
+    parameters:
+      duration_ms: {type: integer, min: 150, max: 1200, default: 500}
+    action_strategy: game_specific
+    expected_result: moved_forward
+    verification_strategy: none
+    timeout_ms: 3000
+    retry: {max_attempts: 1, backoff_ms: 0}
+    recovery: [reobserve]
+
+  - skill: mc_chop_wood
+    game: minecraft
+    category: game_specific
+    description: Mine the wood/tree block under the crosshair (hold left click).
+    preconditions:
+      - "state.game_state.crosshair_visible == true"
+      - "state.game_state.block_under_crosshair == wood"
+    perception: [screenshot, vision]
+    parameters:
+      duration_ms: {type: integer, min: 400, max: 3000, default: 1500}
+    action_strategy: game_specific
+    expected_result: block_broken
+    verification_strategy: none
+    timeout_ms: 4000
+    retry: {max_attempts: 2, backoff_ms: 200}
+    recovery: [reobserve, retry]
+
+  - skill: mc_mine_ground
+    game: minecraft
+    category: game_specific
+    description: Look down and mine the block below to gather dirt/stone.
+    preconditions:
+      - "state.game_state.crosshair_visible == true"
+    perception: [screenshot, vision]
+    parameters:
+      duration_ms: {type: integer, min: 400, max: 3000, default: 1500}
+    action_strategy: game_specific
+    expected_result: block_broken
+    verification_strategy: none
+    timeout_ms: 4000
+    retry: {max_attempts: 2, backoff_ms: 200}
+    recovery: [reobserve, retry]
+
+  - skill: mc_flee_threat
+    game: minecraft
+    category: game_specific
+    description: Under threat - sprint away from hostiles to safety.
+    preconditions:
+      - "state.game_state.crosshair_visible == true"
+      - "state.game_state.under_threat == true"
+    perception: [screenshot, vision]
+    parameters:
+      duration_ms: {type: integer, min: 400, max: 1500, default: 900}
+    action_strategy: game_specific
+    expected_result: fled
+    verification_strategy: none
+    timeout_ms: 3000
+    retry: {max_attempts: 1, backoff_ms: 0}
+    recovery: [reobserve]
+
+  - skill: mc_fight
+    game: minecraft
+    category: game_specific
+    description: Attack the mob under the crosshair (left click bursts).
+    preconditions:
+      - "state.game_state.crosshair_visible == true"
+      - "state.game_state.under_threat == true"
+    perception: [screenshot, vision]
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: attacked
+    verification_strategy: none
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 150}
+    recovery: [reobserve]
+
+  - skill: mc_unpause
+    game: minecraft
+    category: game_specific
+    description: If paused, press Escape to resume gameplay.
+    preconditions:
+      - "state.game_state.is_paused == true"
+    perception: [screenshot, ocr]
+    parameters: {}
+    action_strategy: game_specific
+    expected_result: resumed
+    verification:
+      expected_state: gameplay
+    verification_strategy: screen_transition
+    timeout_ms: 3000
+    retry: {max_attempts: 2, backoff_ms: 200}
+    recovery: [reobserve, retry]
