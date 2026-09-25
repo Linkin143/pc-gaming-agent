@@ -242,3 +242,239 @@ def test_fusion_ocr_only_when_opencv_unknown(config):
     agent._fuse_l1_l2(bundle)
     assert bundle.fused_state == "world_select"
     assert bundle.signals_agree is False
+
+
+# --------------------- mc_title multi-click stall fix --------------------- #
+
+def test_mc_title_declares_post_click_settle(agent):
+    """Regression: the Minecraft title 'Play' needs a settle delay so the next
+    OCR cycle sees world-select instead of re-clicking Play."""
+    mc_title = next(s for s in agent._states if s["name"] == "mc_title")
+    assert int(mc_title["action"].get("post_click_ms", 0)) >= 3000
+
+
+def test_same_state_action_budget_configured(agent):
+    """Regression: a state that keeps matching must be bounded by an action
+    budget (not only the wall-clock stall timer, which resets per action)."""
+    assert int(agent._cfg.get("max_same_state_actions", 0)) >= 1
+
+
+def test_wait_state_not_killed_by_action_budget(agent, monkeypatch):
+    """Regression (live-run stall launch_20260926_005809): a transitional 'wait'
+    state (game_launching) must NOT be killed after max_same_state_actions waits.
+
+    Minecraft (Bedrock/trial) can take 30-90s from the Xbox Play click to the
+    title screen. The old loop charged every wait against the 8-action budget, so
+    game_launching died after ~17s (8 waits) before the game window appeared. A
+    pure wait must instead be bounded by the WALL-CLOCK stall_timeout_s: it should
+    survive far more than max_same_state waits, and time out only after the
+    wall-clock budget elapses."""
+    import agents.launch.launch_agent as la
+
+    # Tight budgets so the test is fast: 3-action budget, 20s wall-clock stall.
+    agent._cfg["max_same_state_actions"] = 3
+    agent._cfg["stall_timeout_s"] = 20.0
+    agent._cfg["hard_cap_s"] = 10_000.0
+    agent._cfg["poll_interval_s"] = 0.0
+
+    # Virtual clock: each time.time() advances 5s; time.sleep is a no-op. This
+    # lets many "waits" pass quickly while the wall-clock budget still elapses.
+    clock = {"t": 0.0}
+    def _now():
+        return clock["t"]
+    def _sleep(_s):
+        clock["t"] += 5.0
+    monkeypatch.setattr(la.time, "time", _now)
+    monkeypatch.setattr(la.time, "sleep", _sleep)
+    agent._warmup_ocr = lambda: None
+
+    # Always perceive the blank game_launching screen (Xbox present, no text, no
+    # crosshair, never any Minecraft window -> never transitions).
+    from agents.launch.launch_agent import PerceptionBundle
+    def _perceive():
+        b = PerceptionBundle(window_titles=["Xbox"], timestamp=0.0)
+        b.ocr_text = ""
+        b.crosshair = False
+        b.frame = object()
+        return b
+    agent.perceive = _perceive
+
+    waits = {"n": 0}
+    def _count_do(state, obs):
+        if (state.get("action", {}) or {}).get("op") == "wait":
+            waits["n"] += 1
+        # don't actually sleep inside the action for this test
+    agent._do_action = _count_do
+
+    result = agent.run()
+
+    assert result is False                     # eventually stalls (game never opens)
+    # It must have waited MANY more times than the 3-action budget before the
+    # wall-clock stall fired - proving waits aren't charged to the action budget.
+    assert waits["n"] > 3
+    # And it stopped because the wall-clock budget elapsed (~20s / 5s step ≈ 4+).
+    assert clock["t"] >= 20.0
+
+
+def test_do_action_honours_post_click_ms(agent, monkeypatch):
+    """_do_action must sleep for post_click_ms after a successful click_text so a
+    slow-navigating button (mc_title Play) is given time to render the next screen."""
+    import agents.launch.launch_agent as la
+
+    # Fake finder: screenshot returns a dummy frame+origin, _match_in_frame always
+    # 'finds' the target, click_at records the click.
+    clicks: list[tuple[int, int]] = []
+
+    class _F:
+        region = None
+
+        def screenshot(self):
+            return (object(), 0, 0)
+
+        def _match_in_frame(self, _frame, _t, _conf, _exclude, precomputed=None):
+            return (10, 20)
+
+        def click_at(self, x, y, **_k):
+            clicks.append((x, y))
+
+    slept: list[float] = []
+    monkeypatch.setattr(la.time, "sleep", lambda s: slept.append(s))
+    agent.finder = _F()
+
+    state = {"name": "mc_title",
+             "action": {"op": "click_text", "targets": ["play"],
+                        "post_click_ms": 4000}}
+    agent._do_action(state, _obs(titles=["Minecraft"], text="play"))
+
+    assert clicks == [(10, 20)]
+    # The 4000 ms settle (=4.0 s) must have been requested.
+    assert any(abs(s - 4.0) < 1e-6 for s in slept)
+
+
+# --------------------- VLM cost-control (cycle speed) --------------------- #
+
+class _CountingVLMAgent(LaunchAgent):
+    """LaunchAgent that records whether the VLM (L3) was invoked this cycle."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.vlm_calls = 0
+
+    def _augment_with_vlm(self, bundle):  # noqa: ANN001
+        self.vlm_calls += 1
+
+
+def _bundle_for(agent, *, titles, text, crosshair=False):
+    """Build a PerceptionBundle-like object via the real dataclass path."""
+    from agents.launch.launch_agent import PerceptionBundle
+    b = PerceptionBundle(window_titles=titles, timestamp=0.0)
+    b.ocr_text = text.lower()
+    b.crosshair = crosshair
+    return b
+
+
+def _run_vlm_decision(agent, bundle):
+    """Replicate perceive()'s L3-trigger block against a prebuilt bundle."""
+    agent._fuse_l1_l2(bundle)
+    matched = agent._match_state(bundle)
+    matched_op = (matched.get("action", {}) or {}).get("op") if matched else None
+    vlm_threshold = float(agent._cfg.get("vlm_threshold", 0.55))
+    # Simulate a present frame so the frame-is-not-None guard passes.
+    bundle.frame = object()
+    if bundle.frame is not None and not bundle.crosshair and (
+            matched is None
+            or bundle.fused_confidence < vlm_threshold
+            or matched_op == "click_world"):
+        agent._augment_with_vlm(bundle)
+
+
+def test_vlm_skipped_on_confident_declarative_match(config):
+    """A confident OCR match (e.g. game_card) must NOT fire the ~40s VLM."""
+    agent = _CountingVLMAgent(config=config, xbox=_Stub(), finder=_Stub(), vision=_Stub())
+    bundle = _bundle_for(agent, titles=["Xbox"],
+                         text="minecraft for windows play installed")
+    _run_vlm_decision(agent, bundle)
+    assert bundle.fused_state == "game_card"
+    assert agent.vlm_calls == 0
+
+
+def test_vlm_fires_for_world_select(config):
+    """world_select uses the VLM hint to pick a world by name, so it must fire."""
+    agent = _CountingVLMAgent(config=config, xbox=_Stub(), finder=_Stub(), vision=_Stub())
+    bundle = _bundle_for(agent, titles=["Minecraft"],
+                         text="worlds create new play world")
+    _run_vlm_decision(agent, bundle)
+    assert bundle.fused_state == "world_select"
+    assert agent.vlm_calls == 1
+
+
+def test_vlm_fires_when_unmatched(config):
+    """A frame matching NO declarative state must still escalate to the VLM.
+
+    A Minecraft window whose OCR text matches none of the Minecraft states (no
+    crosshair, no menu/loading/world keywords) is genuinely unmatched - the
+    desktop/xbox_home fallbacks only catch non-Minecraft or XBOX windows.
+    """
+    agent = _CountingVLMAgent(config=config, xbox=_Stub(), finder=_Stub(), vision=_Stub())
+    bundle = _bundle_for(agent, titles=["Minecraft"], text="qwerty zxcvb")
+    assert agent._match_state(bundle) is None      # sanity: truly unmatched
+    _run_vlm_decision(agent, bundle)
+    assert agent.vlm_calls == 1
+
+
+# ------------------- post-world-enter crosshair poll --------------------- #
+
+def test_await_crosshair_after_world_enter_returns_true(agent, monkeypatch):
+    """The fast post-click_world poll returns True as soon as the crosshair shows,
+    without running OCR or the VLM."""
+    import agents.launch.launch_agent as la
+
+    class _HUD:
+        crosshair_visible = True
+
+    class _Vision:
+        def analyse(self, _frame):
+            return _HUD()
+
+    class _F:
+        region = None
+
+        def screenshot(self):
+            return (object(), 0, 0)
+
+    agent.vision = _Vision()
+    agent.finder = _F()
+    agent._cfg["world_enter_polls"] = 5
+    agent._cfg["world_enter_poll_s"] = 0.0
+    monkeypatch.setattr(la.time, "sleep", lambda _s: None)
+    assert agent._await_crosshair_after_world_enter() is True
+
+
+def test_await_crosshair_times_out_without_crosshair(agent, monkeypatch):
+    import agents.launch.launch_agent as la
+
+    class _HUD:
+        crosshair_visible = False
+
+    class _Vision:
+        def analyse(self, _frame):
+            return _HUD()
+
+    class _F:
+        region = None
+
+        def screenshot(self):
+            return (object(), 0, 0)
+
+    agent.vision = _Vision()
+    agent.finder = _F()
+    agent._cfg["world_enter_polls"] = 3
+    agent._cfg["world_enter_poll_s"] = 0.0
+    monkeypatch.setattr(la.time, "sleep", lambda _s: None)
+    assert agent._await_crosshair_after_world_enter() is False
+
+
+def test_hard_cap_raised_for_slow_launch(agent):
+    """The hard cap must be generous enough that a ~16-min launch isn't cut off
+    right as it enters the world."""
+    assert float(agent._cfg.get("hard_cap_s", 0)) >= 1200

@@ -4,5 +4,11 @@ vision_confidence_threshold: 0.70
 change_detection_threshold: 0.02
 enable_vlm: true
 vlm_escalation_confidence: 0.6
+vlm_threshold: 0.75      # VLM (L3) fires only when the fused L1+L2 confidence is
+                         # below this. Raised from 0.55 so confident OCR matches
+                         # (game_card=0.80, mc_title=0.83) skip the ~5-8s VLM call.
 ocr_language: en
-cache_ttl_seconds: 2.0
+cache_ttl_seconds: 8.0   # OCR result cache lifetime; large enough that repeat
+                         # scans of an unchanged screen within one perception
+                         # cycle reuse the last result instead of re-running the
+                         # ~40s PaddleOCR pipeline.

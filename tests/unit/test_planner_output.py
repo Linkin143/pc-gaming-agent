@@ -76,6 +76,38 @@ def test_minecraft_crosshair_bypasses_low_confidence_observe(config, mc_registry
     assert intent.skill.startswith("mc_")
 
 
+def test_crosshair_shortcircuits_llm_planner(config, mc_registry):
+    """Regression (gameplay actions never fired): when the LLM planner is ACTIVE
+    it tends to return `observe`, and because it runs INSTEAD of the deterministic
+    path the crosshair-driven movement logic never fires. A visible crosshair must
+    short-circuit to the deterministic gameplay planner BEFORE the LLM is asked."""
+    planner = PlannerAgent(config)
+
+    # Simulate an active LLM that always chooses `observe` (the real-world symptom).
+    class _StubLLM:
+        def invoke(self, _messages):
+            from core.models import SkillIntent
+            return SkillIntent(skill="observe", reason="stub llm", confidence=0.9)
+
+    planner._llm = object()               # noqa: SLF001 - mark as present
+    planner._structured_llm = _StubLLM()  # noqa: SLF001
+    assert planner.llm_available is True
+
+    state = new_structured_state("minecraft")
+    state.screen = ScreenState.GAMEPLAY
+    state.overall_confidence = 0.245
+    state.game_state = {
+        "crosshair_visible": True, "health": 20, "under_threat": False,
+        "block_under_crosshair": "grass", "day_time": "day", "is_paused": False,
+    }
+    available = mc_registry.list_available(state)
+    intent = planner.plan(state=state, user_goal="Reach the world",
+                          available_skills=available)
+    # The deterministic gameplay planner wins over the LLM's `observe`.
+    assert intent.skill != "observe"
+    assert intent.skill.startswith("mc_")
+
+
 def test_planner_output_confidence_in_range(config, registry):
     planner = _deterministic_planner(config)
     state = new_structured_state("among_us")

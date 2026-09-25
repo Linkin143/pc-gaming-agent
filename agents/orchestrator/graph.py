@@ -17,6 +17,7 @@ from agents.skills.skill_agent import SkillRegistry
 from agents.verification.verifier import VerificationAgent
 from core.config import AppConfig
 from core.constants import NodeName, VerificationResult
+from core.exceptions import EmergencyStopError, ForegroundError
 from core.logger import RunLogger, get_logger
 from core.models import (
     ActionPlan,
@@ -234,19 +235,37 @@ class GameAutomationEngine:
         plans = raw.get("plans", [])
         structured = load_structured(state)
         results = []
-        for p in plans:
-            plan = ActionPlan.model_validate(p)
-            if str(plan.action_type).startswith("mouse"):
-                result = self.mouse.execute(plan)
-            elif str(plan.action_type) == "wait":
-                time.sleep(min(plan.duration_ms / 1000.0, 10.0))
-                result = None
-            else:
-                result = self.keyboard.execute(plan)
-            if result is not None:
-                results.append(result.model_dump(mode="json"))
-                structured.last_action = plan
-                structured.last_action_result = result
+        try:
+            for p in plans:
+                plan = ActionPlan.model_validate(p)
+                if str(plan.action_type).startswith("mouse"):
+                    result = self.mouse.execute(plan)
+                elif str(plan.action_type) == "wait":
+                    time.sleep(min(plan.duration_ms / 1000.0, 10.0))
+                    result = None
+                else:
+                    result = self.keyboard.execute(plan)
+                if result is not None:
+                    results.append(result.model_dump(mode="json"))
+                    structured.last_action = plan
+                    structured.last_action_result = result
+        except EmergencyStopError:
+            # Abort-level: the emergency stop must halt the whole engine.
+            logger.warning("executor_emergency_stop")
+            return {"finished": True, "finish_reason": "emergency_stop",
+                    "log": self._log_entry("executor", aborted=True)}
+        except ForegroundError as exc:
+            # The target game window lost focus (e.g. the user alt-tabbed, or the
+            # console/IDE is foreground). This is a TRANSIENT, recoverable
+            # condition - NOT a reason to crash the run. Surface it as a soft
+            # verification failure so the recovery agent can re-focus and retry,
+            # instead of the KBM executor's re-raise propagating out of the graph.
+            logger.warning("executor_foreground_lost", error=str(exc))
+            return {"structured": dump_structured(structured),
+                    "verification_result": VerificationResult.FAILURE.value,
+                    "verification": {"result": VerificationResult.FAILURE.value,
+                                     "reason": "target window not in foreground"},
+                    "log": self._log_entry("executor", foreground_lost=True)}
         return {"structured": dump_structured(structured),
                 "action_result": {"results": results},
                 "log": self._log_entry("executor", executed=len(results))}
@@ -257,6 +276,29 @@ class GameAutomationEngine:
         intent = SkillIntent.model_validate(state["intent"])
         skill = self.skills.get(intent.skill)
         run_id = state.get("run_id", "unknown")
+
+        # Fast path: skills that declare `verification_strategy: none` (all the
+        # per-frame gameplay skills - mc_move/mc_look_around/mc_approach/etc.) do
+        # NOT need a second full perception pass (~40-80s). The next loop iteration
+        # re-perceives anyway, so we skip straight to the no-op verdict here.
+        if str(skill.verification_strategy) == "none":
+            outcome = self.verifier.verify(
+                skill, before=before, after_perception=None, after_state=before)
+            after = before.model_copy(deep=True)
+            after.last_verification = outcome
+            after.push_history(HistoryEntry(
+                iteration=int(state.get("iteration", 0)), skill=skill.name,
+                action_type=str(after.last_action.action_type) if after.last_action else "",
+                verification=VerificationResult(outcome.result),
+                screen_state=after.screen, note=outcome.reason))
+            if VerificationResult(outcome.result) is VerificationResult.SUCCESS:
+                after.recovery = RecoveryContext(max_attempts=self.config.max_recovery_attempts)
+            return {"structured": dump_structured(after),
+                    "verification": outcome.model_dump(mode="json"),
+                    "verification_result": str(outcome.result),
+                    "log": self._log_entry("verification", result=str(outcome.result),
+                                           reason=outcome.reason, fast_path=True)}
+
         try:
             post = self.perception.perceive(run_id=run_id)
             post = self.state_builder.build_perception(post)

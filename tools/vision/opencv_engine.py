@@ -150,6 +150,12 @@ class OpenCVEngine:
         planner can treat them as ground truth.
         """
         try:
+            # Downsample large frames before analysis: every metric here is a
+            # coarse ratio/count that is unchanged by a 4x reduction, but running on
+            # ~1/16th the pixels makes feature extraction 4-16x faster. A previous
+            # frame (for motion) is scaled to the SAME small size for a valid diff.
+            frame, prev_frame = self._downscale_pair(frame, prev_frame)
+
             h, w = frame.shape[:2]
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
 
@@ -199,6 +205,28 @@ class OpenCVEngine:
         except Exception as exc:  # noqa: BLE001 - features must never crash the loop
             logger.warning("feature_extraction_failed", error=str(exc))
             return VisualFeatures()
+
+    # Target width for feature extraction; larger frames are scaled down to this.
+    _FEATURE_TARGET_W = 480
+
+    @classmethod
+    def _downscale_pair(cls, frame: np.ndarray,
+                        prev_frame: np.ndarray | None) -> tuple[np.ndarray, np.ndarray | None]:
+        """Scale ``frame`` (and ``prev_frame`` to match) down to ~_FEATURE_TARGET_W
+        wide for fast, resolution-independent feature extraction."""
+        h, w = frame.shape[:2]
+        if w <= cls._FEATURE_TARGET_W:
+            return frame, prev_frame
+        scale = cls._FEATURE_TARGET_W / float(w)
+        new_size = (cls._FEATURE_TARGET_W, max(1, int(round(h * scale))))
+        small = cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
+        small_prev = None
+        if prev_frame is not None:
+            try:
+                small_prev = cv2.resize(prev_frame, new_size, interpolation=cv2.INTER_AREA)
+            except Exception:  # noqa: BLE001 - mismatched prev is simply dropped
+                small_prev = None
+        return small, small_prev
 
     @staticmethod
     def _count_ui_rects(edges: np.ndarray, w: int, h: int) -> int:

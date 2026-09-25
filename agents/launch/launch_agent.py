@@ -100,12 +100,22 @@ class LaunchAgent:
                  vision: MinecraftVision | None = None,
                  opencv: OpenCVEngine | None = None) -> None:
         self.config = config or get_config()
+        # Ensure the process is DPI-aware before any capture/click, in case the
+        # LaunchAgent is constructed directly (not via main()). Idempotent.
+        try:
+            from core.dpi import set_dpi_awareness
+            set_dpi_awareness()
+        except Exception:  # noqa: BLE001 - never block launch on this
+            pass
         self.xbox = xbox or XboxDesktopAutomation()
         self.finder = finder or ScreenFinder()
         self.vision = vision or MinecraftVision()
         self.opencv = opencv or OpenCVEngine()
         self._vlm: Any | None = None
+        self._vlm_failures: int = 0         # consecutive VLM call failures
+        self._vlm_disabled: bool = False    # set True after too many failures
         self._prev_frame: np.ndarray | None = None
+        self._prev_ocr_text: str = ""       # last cycle's OCR text (motion-gate reuse)
         self._shot_dir: Path | None = None  # per-run screenshot folder
         self._states, self._cfg = self._load_skill()
 
@@ -222,25 +232,69 @@ class LaunchAgent:
                 bundle.opencv_state, bundle.opencv_confidence = classify_screen_state(vf)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("perceive_opencv_failed", error=str(exc))
-            # -- L2: OCR text + crosshair pixel truth ---------------------- #
-            try:
-                results = self.finder._ocr.read_text(bundle.frame, use_cache=False)  # noqa: SLF001
-                bundle.ocr_text = " ".join(r.text.lower() for r in results)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("perceive_ocr_failed", error=str(exc))
+            # -- Crosshair pixel truth FIRST (a few ms) -------------------- #
+            # If we are already in-world the crosshair is visible; the loop returns
+            # success immediately and OCR (the ~40s cost) is pointless because the
+            # in-world HUD is icons, not text. So read the crosshair before OCR and
+            # skip OCR entirely when it is present.
             try:
                 bundle.crosshair = bool(self.vision.analyse(bundle.frame).crosshair_visible)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("perceive_vision_failed", error=str(exc))
+
+            # -- L2: OCR text (skipped in-world; motion-gated + cached) --------- #
+            if not bundle.crosshair:
+                # Change-detection gate: if the frame barely changed since last
+                # cycle AND we already have OCR text, the on-screen text is the same
+                # - reuse it and skip OCR entirely (the architecture's "NO
+                # SIGNIFICANT CHANGE -> cache result" branch). motion_score is the
+                # normalised mean pixel delta already computed by L1 this cycle.
+                motion = float(getattr(bundle.visual_features, "motion_score", 1.0)
+                               if bundle.visual_features else 1.0)
+                change_thresh = float(self._cfg.get("ocr_change_threshold", 0.006))
+                if (self._prev_frame is not None and self._prev_ocr_text
+                        and motion < change_thresh):
+                    bundle.ocr_text = self._prev_ocr_text
+                    logger.debug("ocr_skipped_no_change", motion=round(motion, 4))
+                else:
+                    try:
+                        # use_cache=True + ROI crop: an unchanged screen within the
+                        # cache TTL reuses the last OCR result; read_text_roi
+                        # processes only the interactive UI band so a genuine miss
+                        # is markedly faster than a full-frame scan.
+                        results = self.finder._ocr.read_text_roi(  # noqa: SLF001
+                            bundle.frame, use_cache=True)
+                        bundle.ocr_text = " ".join(r.text.lower() for r in results)
+                        self._prev_ocr_text = bundle.ocr_text
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("perceive_ocr_failed", error=str(exc))
             self._prev_frame = bundle.frame
 
         # -- Fuse L1 + L2 into a state verdict ----------------------------- #
         self._fuse_l1_l2(bundle)
 
-        # -- L3: VLM only when the fused signal is weak or signals disagree - #
-        vlm_threshold = float(self._cfg.get("vlm_threshold", 0.55))
+        # -- L3: VLM only when GENUINELY needed --------------------------- #
+        # The VLM costs ~40s per call, so we must not fire it when the cheap
+        # signals already resolved the screen. It runs only when:
+        #   * OCR did NOT confidently match any declarative state, OR
+        #   * the fused confidence is weak, OR
+        #   * the matched state's action is `click_world` (world-select uses the
+        #     VLM hint to pick a world by name).
+        # Crucially we DROP the old `not signals_agree` trigger: OpenCV's coarse
+        # vote (menu/gameplay/unknown) rarely equals OCR's precise state, so that
+        # clause fired the VLM almost every cycle even on a confident OCR match -
+        # which is what made each launch cycle take ~80s.
+        matched = self._match_state(bundle)
+        matched_op = (matched.get("action", {}) or {}).get("op") if matched else None
+        # A state may declare `skip_vlm: true` when its OCR match is unambiguous
+        # (e.g. game_card/mc_title/search_results) - then the VLM adds latency with
+        # no value and is suppressed even below the confidence threshold.
+        state_skips_vlm = bool((matched or {}).get("skip_vlm", False))
+        vlm_threshold = float(self._cfg.get("vlm_threshold", 0.75))
         if bundle.frame is not None and not bundle.crosshair and (
-                bundle.fused_confidence < vlm_threshold or not bundle.signals_agree):
+                matched is None
+                or (bundle.fused_confidence < vlm_threshold and not state_skips_vlm)
+                or matched_op == "click_world"):
             self._augment_with_vlm(bundle)
 
         # -- Persist the frame with the final verdict in its name ---------- #
@@ -307,6 +361,11 @@ class LaunchAgent:
             bundle.fused_state = ocr_state or "unknown"
             bundle.fused_confidence = ocr_conf
 
+        # Agreement means the DETERMINISTIC signals (OpenCV L1 + OCR L2) concur.
+        # The VLM (L3) is folded in later by _augment_with_vlm, which recomputes
+        # agreement to include its vote; here we only claim agreement when both
+        # cheap signals produced the SAME non-empty state. This is used purely as a
+        # confidence bonus, so it must not over-claim when they actually differ.
         bundle.signals_agree = bool(
             ocr_state and opencv_state and ocr_state == opencv_state)
         if bundle.signals_agree:
@@ -380,24 +439,80 @@ class LaunchAgent:
         if op == "click_text":
             targets = action.get("targets", []) or []
             exclude = tuple(action.get("exclude", []) or ())
-            # Capture + OCR ONCE, then test every target against that single
-            # frame. Previously each target did its own screenshot()+OCR pass
-            # (~8s apiece); with 3 targets that was ~24s of dead time per action,
-            # which is why only ~6 perception cycles fit inside the stall window.
-            frame, ox, oy = self.finder.screenshot()
+            # Reuse the SAME frame + OCR results already computed by perceive() this
+            # cycle - no second screenshot, no second OCR scan. This removes the
+            # ~40s duplicate OCR that previously ran inside every click_text action.
+            # We OCR the bundle frame once (cache hit, since perceive() just ran it)
+            # and hand the results to every target match as `precomputed`.
+            if obs.frame is not None:
+                frame, ox, oy = obs.frame, 0, 0
+                try:
+                    precomputed = self.finder._ocr.read_text_roi(  # noqa: SLF001
+                        frame, use_cache=True)
+                except Exception:  # noqa: BLE001
+                    precomputed = None
+            else:
+                frame, ox, oy = self.finder.screenshot()
+                precomputed = None
+
+            # CRITICAL FIX: Ensure the CORRECT window is focused before clicking
+            # Minecraft states -> focus Minecraft window
+            # Xbox states -> focus Xbox window
+            minecraft_states = ("mc_title", "world_select", "loading")
+            xbox_states = ("game_card", "search_results", "xbox_home", "game_launching")
+            if name in minecraft_states:
+                self._focus_minecraft_window()
+            elif name in xbox_states:
+                self._focus_xbox_window()
+
             for t in targets:
                 local = self.finder._match_in_frame(  # noqa: SLF001
-                    frame, str(t), 0.35, exclude)
+                    frame, str(t), 0.35, exclude, precomputed=precomputed)
                 if local is not None:
                     hit = (ox + local[0], oy + local[1])
-                    self.finder.click_at(*hit)
+
+                    # COORDINATE VALIDATION: Ensure click is within expected window bounds
+                    if not self._validate_click_coordinates(hit, name):
+                        logger.warning("click_coord_validation_failed", target=t, hit=hit, state=name)
+                        continue
+
+                    # ROBUST CLICK: For mc_title, use a more deliberate click
+                    if name == "mc_title":
+                        self._robust_click_minecraft_play(hit)
+                    elif name in ("game_card", "search_results"):
+                        # Xbox app buttons sometimes need slightly longer settle
+                        self.finder.click_at(*hit, settle_s=1.0)
+                    else:
+                        self.finder.click_at(*hit)
                     logger.info("launch_clicked_text", target=t, at=list(hit))
-                    return
+
+                    # VERIFY CLICK REGISTRATION: Wait briefly then check if screen changed
+                    post_ms = int(action.get("post_click_ms", 0) or 0)
+                    if post_ms > 0:
+                        logger.debug("post_click_settle", ms=post_ms)
+                        time.sleep(min(post_ms / 1000.0, 10.0))
+
+                    # CROSSHAIR POLLING: For title screen, poll for crosshair to confirm transition
+                    if name == "mc_title":
+                        if self._await_crosshair_after_click():
+                            logger.info("launch_in_world_confirmed", via="post_click_crosshair_poll")
+                            return
+
+                    # VERIFY SCREEN CHANGED: Re-perceive to confirm transition
+                    if self._verify_screen_transition(name):
+                        logger.info("launch_click_verified_transition", from_state=name)
+                        return
+                    else:
+                        logger.warning("launch_click_no_transition", target=t, state=name)
+                        # Don't return - let the loop re-perceive and potentially retry
+                        return
+
             logger.info("launch_click_text_missing", targets=targets)
             return
 
         if op == "click_world":
             self._click_world(vlm_hint=obs.vlm_action_hint)
+            # click_world already has crosshair polling via _await_crosshair_after_world_enter
             return
 
         if op == "wait":
@@ -451,7 +566,19 @@ class LaunchAgent:
                 logger.info("launch_world_vlm_named", world=wname)
                 return
 
-        # 1) Select the first world row (just under the "Worlds" list header).
+        # 1) EXTENDED SEARCH: Try to find "my world" or other world names
+        # by doing a full-frame OCR scan (not just ROI) since thumbnails
+        # might be outside the default ROI.
+        for wname in ("my world", "myworld", "world", "survival", "creative"):
+            hit = self._find_world_name_full_frame(wname)
+            if hit is not None:
+                self.finder.click_at(*hit)
+                time.sleep(0.8)
+                self.finder.press_enter()
+                logger.info("launch_world_found_by_name", world=wname, at=list(hit))
+                return
+
+        # 2) Select the first world row (just under the "Worlds" list header).
         selected_row = False
         header = self.finder.find_text("worlds")
         if header is not None:
@@ -460,7 +587,7 @@ class LaunchAgent:
             logger.info("launch_world_row_selected", at=[header[0], header[1] + 90])
             time.sleep(1.0)
 
-        # 2) Confirm via the explicit play-world button (unambiguous text).
+        # 3) Confirm via the explicit play-world button (unambiguous text).
         for t in ("play world", "play selected world"):
             hit = self.finder.find_text(t)
             if hit is not None:
@@ -468,13 +595,13 @@ class LaunchAgent:
                 logger.info("launch_world_play", target=t)
                 return
 
-        # 2b) If a row is selected, Enter reliably enters it in Bedrock.
+        # 3b) If a row is selected, Enter reliably enters it in Bedrock.
         if selected_row:
             self.finder.press_enter()
             logger.info("launch_world_enter")
             return
 
-        # 3) Last resort: a bare "play" ONLY in the lower part of the frame
+        # 4) Last resort: a bare "play" ONLY in the lower part of the frame
         #    (avoids the top nav "Play" tab at the very top of the screen).
         lower = self._find_text_below(("play",), min_y_fraction=0.5)
         if lower is not None:
@@ -482,7 +609,7 @@ class LaunchAgent:
             logger.info("launch_world_play_lower", at=list(lower))
             return
 
-        # 4) No world present: create a fresh one.
+        # 5) No world present: create a fresh one.
         for t in ("create new world", "create new"):
             hit = self.finder.find_text(t)
             if hit is not None:
@@ -492,8 +619,29 @@ class LaunchAgent:
                 logger.info("launch_world_created")
                 return
 
-        # 5) Give up gracefully: confirm the highlighted default.
+        # 6) Give up gracefully: confirm the highlighted default.
         self.finder.press_enter()
+
+    def _find_world_name_full_frame(self, query: str) -> tuple[int, int] | None:
+        """Search for world name across full frame (not just ROI).
+        
+        World thumbnails might be outside the default interactive UI ROI.
+        Does a one-time full-frame OCR scan.
+        """
+        try:
+            frame, ox, oy = self.finder.screenshot()
+            # Force full-frame OCR without ROI crop
+            results = self.finder._ocr.read_text(frame, use_cache=False)
+            q = query.lower()
+            for r in results:
+                if r.confidence < 0.35 or r.rect is None:
+                    continue
+                if q in r.text.lower():
+                    cx, cy = r.rect.center.x, r.rect.center.y
+                    return ox + cx, oy + cy
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("full_frame_ocr_failed", error=str(exc))
+        return None
 
     def _find_text_below(self, targets: tuple[str, ...],
                          min_y_fraction: float) -> tuple[int, int] | None:
@@ -567,6 +715,12 @@ class LaunchAgent:
         verdict (weight ``_W_VLM``) and its recommended_action_hint is stored so
         the action layer (e.g. world selection) can act on it.
         """
+        # Circuit breaker: once the VLM has failed too many times in a row (e.g. a
+        # bad model name returning HTTP 404/400), stop calling it for the rest of
+        # the run and degrade gracefully to OCR-only. A broken VLM must never turn
+        # into a runaway retry loop (the 156-call failure seen in the live run).
+        if self._vlm_disabled:
+            return
         vlm = self._ensure_vlm()
         if vlm is None or bundle.frame is None:
             return
@@ -579,6 +733,7 @@ class LaunchAgent:
                                 f"crosshair={bundle.crosshair} "
                                 f"windows={bundle.window_titles[:5]}"),
             )
+            self._vlm_failures = 0          # a good call resets the breaker
             bundle.vlm_scene = scene
             bundle.vlm_action_hint = scene.recommended_action_hint or ""
             logger.info("launch_vlm_scene", screen=str(scene.screen_state),
@@ -598,7 +753,15 @@ class LaunchAgent:
                     bundle.fused_confidence = round(
                         min(vlm_weight / (_W_OPENCV + _W_OCR + _W_VLM), 1.0), 3)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("launch_vlm_failed", error=str(exc))
+            self._vlm_failures += 1
+            max_fail = int(self._cfg.get("vlm_max_failures", 3))
+            logger.warning("launch_vlm_failed", error=str(exc),
+                           failures=self._vlm_failures)
+            if self._vlm_failures >= max_fail:
+                self._vlm_disabled = True
+                logger.warning("launch_vlm_disabled",
+                               reason=f"{self._vlm_failures} consecutive failures; "
+                                      "continuing OCR-only for the rest of this run")
 
     def _arbitrate_with_vlm(self, obs: PerceptionBundle) -> dict[str, Any] | None:
         """Compat shim: return the declarative state the VLM points to (if any)."""
@@ -625,6 +788,11 @@ class LaunchAgent:
         # advancing launch is never killed. `hard_cap_s` is a large safety net.
         stall_timeout_s = float(self._cfg.get("stall_timeout_s", 180))
         hard_cap_s = float(self._cfg.get("hard_cap_s", 900))
+        # A state that keeps matching but never transitions (e.g. the title "Play"
+        # that needs several clicks) should NOT die on the wall-clock stall timer
+        # while it is still acting. Instead we bound the NUMBER of actions a single
+        # state may fire before we treat it as a genuine loop.
+        max_same_state = int(self._cfg.get("max_same_state_actions", 8))
 
         # Warm up OCR BEFORE any timer starts - the first PaddleOCR call has a
         # heavy cold-start (~40-50s) that must not eat the stall budget.
@@ -633,6 +801,7 @@ class LaunchAgent:
         start = time.time()
         last_progress = start
         last_state_name: str | None = None
+        same_state_actions = 0
         confused = 0
 
         while (time.time() - start) < hard_cap_s:
@@ -679,21 +848,96 @@ class LaunchAgent:
                 logger.info("launch_state", state=name,
                             desc=state.get("description", "")[:60])
                 last_state_name = name
+                same_state_actions = 0        # new state => reset the action budget
                 last_progress = time.time()
+                # Drop the cached OCR text so the motion-gate on the NEXT cycle
+                # cannot reuse the previous screen's text across a real
+                # transition (e.g. game_card -> blank game_launching). Stale text
+                # would otherwise cause a wrong declarative match / VLM decision.
+                self._prev_ocr_text = ""
 
-            if state.get("action", {}).get("op") == "done":
+            op = state.get("action", {}).get("op")
+            if op == "done":
                 logger.info("launch_done_state", state=name)
                 return True
 
             self._do_action(state, bundle)
 
-            if (time.time() - last_progress) >= stall_timeout_s:
+            # After entering a world, the crosshair appears within seconds. Poll
+            # for it CHEAPLY (crosshair pixel check only - no OCR, no VLM) so we
+            # confirm success promptly instead of waiting for a full ~40-80s
+            # perception cycle (which previously let the hard cap fire first).
+            if op == "click_world":
+                if self._await_crosshair_after_world_enter():
+                    logger.info("launch_in_world_confirmed", via="post_world_poll")
+                    return True
+
+            # A pure WAIT is NOT a loop iteration - the state is intentionally
+            # idling for an EXTERNAL transition (e.g. the Minecraft process
+            # starting, which for Bedrock/trial routinely takes 30-90s - far
+            # longer than max_same_state * poll). Charging waits against the
+            # per-state action budget killed game_launching after only ~17s
+            # (8 waits * ~2s) before the game window ever appeared. So waits are
+            # bounded by the WALL-CLOCK stall_timeout_s instead: we do NOT
+            # increment the action budget and do NOT reset last_progress, so a
+            # genuinely hung transitional screen still times out after
+            # stall_timeout_s (default 180s) while a slow-but-normal launch is
+            # allowed to complete.
+            if op == "wait":
+                waited = time.time() - last_progress
+                if waited >= stall_timeout_s:
+                    logger.warning("launch_stalled", stalled_s=round(waited, 1),
+                                   last_state=last_state_name,
+                                   reason=f"waited {round(waited, 1)}s in state "
+                                          f"'{name}' without a transition")
+                    return False
+                time.sleep(poll_s)
+                continue
+
+            # A successful non-wait action (e.g. a click) IS progress: reset the
+            # wall-clock stall timer so a multi-click state (e.g. mc_title "Play")
+            # is not killed mid-sequence. Genuine click loops are caught by the
+            # per-state action budget below.
+            same_state_actions += 1
+            last_progress = time.time()
+            if same_state_actions >= max_same_state:
                 logger.warning("launch_stalled", stalled_s=round(
-                    time.time() - last_progress, 1), last_state=last_state_name)
+                    time.time() - start, 1), last_state=last_state_name,
+                    reason=f"{same_state_actions} actions in state '{name}' "
+                           "without a transition")
                 return False
             time.sleep(poll_s)
 
         logger.warning("launch_hard_cap_reached", elapsed_s=round(time.time() - start, 1))
+        return False
+
+    def _await_crosshair_after_world_enter(self) -> bool:
+        """Cheaply poll for the in-world crosshair right after entering a world.
+
+        Uses ONLY the fast MinecraftVision crosshair pixel check (a few ms) - no
+        OCR, no VLM - so it confirms the in-world transition within seconds of it
+        happening instead of waiting for the next full perception cycle.
+        """
+        # Poll BRIEFLY for the crosshair after a world-enter click. A real enter
+        # shows the crosshair within a few seconds; if it has not appeared in this
+        # short window the click did NOT enter the world (e.g. it hit the wrong
+        # tile), so we must RE-OBSERVE and try again rather than block. The old
+        # 20*3s = 60s wait meant every FAILED world click cost a full minute -
+        # 6 failed attempts = ~6 wasted minutes (the "waited too much" stall).
+        # Genuinely slow world LOADING is handled separately by the main loop's
+        # `loading` state (bounded by the 180s wall-clock stall timer), so a short
+        # poll here does not risk missing a slow-but-successful load: the next
+        # perception cycle will see the `loading` screen and keep waiting.
+        polls = int(self._cfg.get("world_enter_polls", 8))
+        poll_s = float(self._cfg.get("world_enter_poll_s", 1.5))
+        for _ in range(max(1, polls)):
+            time.sleep(poll_s)
+            try:
+                frame, _, _ = self.finder.screenshot()
+                if frame is not None and self.vision.analyse(frame).crosshair_visible:
+                    return True
+            except Exception as exc:  # noqa: BLE001 - a failed poll is non-fatal
+                logger.debug("world_enter_poll_failed", error=str(exc))
         return False
 
     def _warmup_ocr(self) -> None:
@@ -705,5 +949,150 @@ class LaunchAgent:
                 logger.info("launch_ocr_warmed")
         except Exception as exc:  # noqa: BLE001
             logger.debug("launch_ocr_warmup_failed", error=str(exc))
+
+    # ------------------------------------------------------------------ #
+    # Accuracy improvements: window focus, coordinate validation, click verification
+    # ------------------------------------------------------------------ #
+
+    def _focus_minecraft_window(self) -> bool:
+        """Bring the Minecraft window to foreground before clicking.
+        
+        Returns True if successfully focused, False otherwise.
+        """
+        try:
+            win = self.xbox.inspector.find_window(r".*Minecraft.*")
+            win.set_focus()
+            # Verify window is actually foreground
+            import win32gui
+            for _ in range(5):
+                fg = win32gui.GetForegroundWindow()
+                if fg == win.handle:
+                    break
+                time.sleep(0.1)
+            logger.info("minecraft_window_focused", handle=win.handle)
+            time.sleep(0.5)  # Allow focus to fully settle
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("minecraft_focus_failed", error=str(exc))
+            return False
+
+    def _focus_xbox_window(self) -> bool:
+        """Bring the Xbox app window to foreground before clicking."""
+        try:
+            win = self.xbox._best_xbox_window()  # noqa: SLF001
+            win.set_focus()
+            # Verify window is actually foreground
+            import win32gui
+            for _ in range(5):
+                fg = win32gui.GetForegroundWindow()
+                if fg == win.handle:
+                    break
+                time.sleep(0.1)
+            logger.info("xbox_window_focused", handle=win.handle)
+            time.sleep(0.3)  # Allow focus to settle
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("xbox_focus_failed", error=str(exc))
+            return False
+
+    def _robust_click_minecraft_play(self, hit: tuple[int, int]) -> None:
+        """More deliberate click for Minecraft title screen Play button.
+        
+        Minecraft's Play button sometimes needs a slightly longer press or
+        the window needs extra time to process the click.
+        """
+        x, y = hit
+        logger.debug("robust_click_play_attempt", x=x, y=y)
+        # Move to position and hold slightly longer
+        self.finder.click_at(x, y, settle_s=0.8)
+        # Double-tap for reliability (some UWP buttons need this)
+        time.sleep(0.2)
+        self.finder.click_at(x, y, settle_s=0.5)
+        # Also try Enter key as fallback (Play button is usually focused)
+        time.sleep(0.3)
+        self.finder.press_enter()
+        logger.debug("robust_click_play_complete")
+
+    def _validate_click_coordinates(self, hit: tuple[int, int], state_name: str) -> bool:
+        """Validate click coordinates fall within the expected window bounds.
+        
+        For Minecraft states, ensures click is within the Minecraft window rect.
+        For Xbox states, ensures click is within the Xbox window rect.
+        """
+        try:
+            if state_name in ("mc_title", "world_select", "loading"):
+                win = self.xbox.inspector.find_window(r".*Minecraft.*")
+            else:
+                win = self.xbox._best_xbox_window()  # noqa: SLF001
+
+            rect = win.rectangle()
+            x, y = hit
+            # Add small margin for safety
+            margin = 50
+            if (rect.left - margin <= x <= rect.right + margin and
+                    rect.top - margin <= y <= rect.bottom + margin):
+                return True
+            logger.warning("click_outside_window", hit=hit, state=state_name,
+                           window_rect={"left": rect.left, "top": rect.top,
+                                        "right": rect.right, "bottom": rect.bottom})
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("coord_validation_failed", error=str(exc))
+            return True  # Allow click if validation fails (fail-open)
+
+    def _await_crosshair_after_click(self) -> bool:
+        """Poll for crosshair after clicking Play on title screen.
+        
+        Similar to _await_crosshair_after_world_enter but shorter timeout
+        since title screen -> world select should be fast.
+        """
+        polls = int(self._cfg.get("title_click_polls", 5))
+        poll_s = float(self._cfg.get("title_click_poll_s", 1.0))
+        for _ in range(max(1, polls)):
+            time.sleep(poll_s)
+            try:
+                frame, _, _ = self.finder.screenshot()
+                if frame is not None and self.vision.analyse(frame).crosshair_visible:
+                    return True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("title_click_poll_failed", error=str(exc))
+        return False
+
+    def _verify_screen_transition(self, from_state: str) -> bool:
+        """Verify the screen actually changed after a click action.
+        
+        Takes a quick perception cycle and checks if the state is different
+        from the expected 'from_state'.
+        """
+        try:
+            # Quick perception without VLM
+            bundle = self.perceive()
+            if bundle.crosshair:
+                return True  # In world = success
+            
+            matched = self._match_state(bundle)
+            if matched is None:
+                return False  # No match = uncertain
+            
+            new_state = matched.get("name")
+            # Consider it a transition if we moved to a different state
+            # or if we're in a known "next" state
+            expected_next = {
+                "mc_title": ("world_select", "loading", "in_world"),
+                "search_results": ("game_card", "game_launching"),
+                "game_card": ("game_launching", "mc_title"),
+                "xbox_home": ("search_results",),
+                "desktop": ("xbox_app", "xbox_home"),
+            }
+            
+            if new_state != from_state:
+                logger.info("screen_transition_detected", from_state=from_state, to_state=new_state)
+                return True
+            
+            # Allow staying in same state if it's a valid intermediate (e.g., waiting)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("verify_transition_failed", error=str(exc))
+            return False
 
 

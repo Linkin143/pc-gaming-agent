@@ -24,8 +24,6 @@ def configure_logging(
         log_file.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
 
-    logging.basicConfig(format="%(message)s", level=log_level, handlers=handlers)
-
     shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
@@ -40,12 +38,31 @@ def configure_logging(
         else structlog.dev.ConsoleRenderer(colors=True)
     )
 
+    # Route structlog through stdlib logging so EVERY configured handler - both
+    # the stdout StreamHandler and the FileHandler - receives the structured
+    # events. Previously PrintLoggerFactory wrote straight to stdout, so the log
+    # file only captured third-party stdlib logs (e.g. httpx HTTP lines) and none
+    # of our own perception/state events - making file-based post-mortems useless.
     structlog.configure(
-        processors=[*shared_processors, renderer],
+        processors=[
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
+
+    # The stdlib handlers render the structlog event dict with the chosen renderer.
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processor=renderer,
+        foreign_pre_chain=shared_processors,
+    )
+    for handler in handlers:
+        handler.setFormatter(formatter)
+    root = logging.getLogger()
+    root.handlers = handlers
+    root.setLevel(log_level)
 
 
 def get_logger(name: str = "pcgaf") -> structlog.stdlib.BoundLogger:

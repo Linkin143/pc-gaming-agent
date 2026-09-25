@@ -111,21 +111,104 @@ class ScreenFinder:
         return ox + hit[0], oy + hit[1]
 
     def _match_in_frame(self, frame: np.ndarray, query: str, min_confidence: float,
-                        exclude: tuple[str, ...]) -> tuple[int, int] | None:
+                        exclude: tuple[str, ...],
+                        precomputed: list[OCRResult] | None = None,
+                        ) -> tuple[int, int] | None:
         q = query.lower()
         best: OCRResult | None = None
         try:
-            results = self._ocr.read_text(frame, use_cache=False)
+            # Reuse OCR results already computed this cycle when provided - this is
+            # the key fix that eliminates the second ~40s OCR scan that used to run
+            # inside every click_text/find_text. Otherwise fall back to a
+            # cache-first ROI scan (use_cache=True) so an unchanged frame is free.
+            if precomputed is not None:
+                results = precomputed
+            else:
+                results = self._ocr.read_text_roi(frame, use_cache=True)
         except Exception as exc:  # noqa: BLE001
             logger.warning("ocr_failed_in_find", error=str(exc))
             return None
+        # Compare with spaces removed on BOTH sides. RapidOCR frequently renders
+        # tile labels without spaces (e.g. "Minecraft for Windows" -> the single
+        # token "MinecraftforWindows"), so a spaced query like "minecraft for
+        # windows" would never substring-match and the search would wrongly fall
+        # through to the next target ("minecraft launcher"). Normalising removes
+        # that whitespace ambiguity without loosening which tile is selected
+        # ("minecraftforwindows" still never matches "minecraftlauncher").
+        def _norm(s: str) -> str:
+            return "".join(s.lower().split())
+
+        def _edit_distance(a: str, b: str, cap: int = 2) -> int:
+            """Levenshtein distance, short-circuited once it exceeds ``cap``.
+            Used only for the fuzzy button-label fallback below, so a cheap
+            O(len(a)*len(b)) DP is plenty (labels are a handful of chars)."""
+            if abs(len(a) - len(b)) > cap:
+                return cap + 1
+            prev = list(range(len(b) + 1))
+            for i, ca in enumerate(a, 1):
+                cur = [i]
+                row_min = i
+                for j, cb in enumerate(b, 1):
+                    cost = 0 if ca == cb else 1
+                    val = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+                    cur.append(val)
+                    row_min = min(row_min, val)
+                if row_min > cap:      # whole row already past the cap
+                    return cap + 1
+                prev = cur
+            return prev[-1]
+
+        q_norm = _norm(query)
+        q_toklen = len(query.split())
+
+        # A clickable button label is a SHORT, near-standalone text element. A
+        # paragraph that merely *contains* the query word (e.g. the legal line
+        # "...while you play.") must never win over the real "Play" button, even
+        # though OCR gives the paragraph higher confidence. So we rank candidates:
+        #   tier 0 (best): exact normalised match  (text == query)
+        #   tier 1       : query is a whole-word run in a SHORT label
+        #                  (label has <= query_words + 2 tokens)
+        #   tier 2       : substring inside a longer block of text
+        #   tier 3 (worst): FUZZY match on a short label - tolerates a 1-char OCR
+        #                   misread on a standalone button (e.g. Minecraft's title
+        #                   "Play" is read as "Flay", "Elay"...). Only applies when
+        #                   NO exact/substring match exists, and only to short
+        #                   labels (<= query chars + 2), so it never loosens which
+        #                   tile is picked on the busy search-results page.
+        # Within a tier, higher OCR confidence wins.
+        best_key: tuple[int, float] | None = None
+        # A conservative edit-distance budget: single-word queries allow 1 typo,
+        # longer targets scale up slightly. Never fuzzy-match very short queries
+        # (<=2 chars) where one edit could match unrelated words.
+        fuzz_cap = 0 if len(q_norm) <= 2 else (1 if len(q_norm) <= 5 else 2)
         for r in results:
             text = r.text.lower()
+            text_norm = _norm(r.text)
             if r.confidence < min_confidence or r.rect is None:
                 continue
-            if any(x in text for x in exclude):
+            if any(_norm(x) in text_norm or x in text for x in exclude):
                 continue
-            if q in text and (best is None or r.confidence > best.confidence):
+            toklen = len(r.text.split())
+            if q_norm not in text_norm:
+                # No exact/substring hit. Try a fuzzy match, but ONLY on short,
+                # near-standalone labels so we don't fuzz-match inside paragraphs.
+                if (fuzz_cap > 0 and toklen <= q_toklen + 1
+                        and abs(len(text_norm) - len(q_norm)) <= fuzz_cap
+                        and _edit_distance(text_norm, q_norm, fuzz_cap) <= fuzz_cap):
+                    tier = 3
+                else:
+                    continue
+            elif text_norm == q_norm:
+                tier = 0
+            elif toklen <= q_toklen + 2:
+                tier = 1
+            else:
+                tier = 2
+            # Lower tier is better; higher confidence breaks ties. Encode as a
+            # sort key where bigger = better: (-tier, confidence).
+            key = (-tier, r.confidence)
+            if best_key is None or key > best_key:
+                best_key = key
                 best = r
         if best is None or best.rect is None:
             return None

@@ -15,6 +15,11 @@ rich>=15,<16
 tenacity>=9,<10
 
 opencv-python>=4.10,<5
+# Fast default OCR backend (ONNX Runtime, ~1-2s/scan on CPU). Auto-selected over
+# PaddleOCR when present; set PCGAF_OCR_BACKEND=paddle to force the old backend.
+rapidocr-onnxruntime>=1.3,<2
+onnxruntime>=1.17
+# PaddleOCR is retained as a fallback backend (heavier: ~30-45s/scan on CPU).
 paddleocr>=3.7,<4
 paddlepaddle>=3.2,<4
 numpy>=2,<3

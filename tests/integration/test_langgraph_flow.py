@@ -57,3 +57,25 @@ def test_graph_respects_max_iterations(config):
     engine = _build_engine(config)
     final = engine.run(user_goal="Reach the world", max_iterations=1)
     assert final["iteration"] <= 2
+
+
+def test_verification_fast_path_skips_reperception(config):
+    """Speed: a `none`-strategy skill must NOT trigger a second full perception in
+    verification. We count perception calls and assert there is at most one per
+    iteration (the main perception), not two (main + verification)."""
+    engine = _build_engine(config)
+
+    # Force the planner to pick a gameplay skill that declares verification: none.
+    from core.models import SkillIntent
+
+    def _fake_plan(*, state, user_goal, available_skills):
+        names = {s.name for s in available_skills}
+        skill = "mc_jump" if "mc_jump" in names else sorted(names)[0]
+        return SkillIntent(skill=skill, reason="test", confidence=0.9, goal=user_goal)
+
+    engine.planner.plan = _fake_plan
+    engine.perception.calls = 0
+    final = engine.run(user_goal="Reach the world", max_iterations=2)
+    iterations = int(final.get("iteration", 0))
+    # With the fast path, perception runs once per iteration (not twice).
+    assert engine.perception.calls <= iterations + 1

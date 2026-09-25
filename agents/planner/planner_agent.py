@@ -82,6 +82,20 @@ class PlannerAgent:
         if not available_skills:
             return SkillIntent(skill="observe", reason="No skills available; observing.",
                                confidence=0.3, goal=user_goal)
+
+        # Pixel-truth short-circuit: when the Minecraft crosshair is visible we are
+        # UNAMBIGUOUSLY in-world, so decide gameplay deterministically from the HUD
+        # BEFORE consulting the LLM. Otherwise the LLM planner (active whenever an
+        # API key is present) tends to default to `observe`, and because it runs
+        # instead of the deterministic path, the crosshair-driven movement logic
+        # never fires - the agent reaches gameplay but never acts.
+        gs = state.game_state or {}
+        if state.game == "minecraft" and bool(gs.get("crosshair_visible")):
+            names = {s.name for s in available_skills}
+            mc = self._plan_minecraft_gameplay(gs, names, user_goal)
+            if mc is not None:
+                return mc
+
         if self.llm_available:
             try:
                 intent = self._plan_with_llm(state, user_goal, available_skills)

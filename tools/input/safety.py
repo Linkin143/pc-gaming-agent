@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -39,13 +40,29 @@ def get_foreground_title() -> str:
         return ""
 
 
-def validate_foreground(expected_substring: str | None, *, require: bool) -> None:
+def validate_foreground(expected_substring: str | None, *, require: bool,
+                        retry_s: float = 0.5) -> None:
+    """Ensure the target window is focused before sending input.
+
+    Windows briefly drops a window from the foreground during its own
+    click-to-focus handling, which would otherwise raise a spurious
+    ForegroundError on a perfectly healthy action. When ``retry_s`` > 0 we wait
+    that long and re-check ONCE before failing, absorbing that transient. Pass
+    ``retry_s=0`` for the strict, immediate behaviour.
+    """
     if not require or not expected_substring:
         return
+    expected = expected_substring.lower()
     title = get_foreground_title()
-    if expected_substring.lower() not in title.lower():
-        raise ForegroundError("Target window is not in the foreground.",
-                              context={"expected": expected_substring, "actual": title})
+    if expected in title.lower():
+        return
+    if retry_s > 0:
+        time.sleep(retry_s)
+        title = get_foreground_title()
+        if expected in title.lower():
+            return
+    raise ForegroundError("Target window is not in the foreground.",
+                          context={"expected": expected_substring, "actual": title})
 
 
 @contextmanager

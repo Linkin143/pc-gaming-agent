@@ -10,6 +10,8 @@ over. No single signal can hallucinate the state on its own.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 from agents.perception.evidence_fuser import EvidenceFuser
@@ -47,6 +49,7 @@ class PerceptionAgent:
         self._prev_frame: np.ndarray | None = None
         self._last_result: PerceptionResult | None = None
         self._prev_screen: str = "unknown"
+        self._mc_vision: Any | None = None   # lazy MinecraftVision for OCR-skip check
 
     def set_context(self, *, game: str | None = None, goal: str | None = None,
                     window_title_re: str | None = None) -> None:
@@ -62,6 +65,23 @@ class PerceptionAgent:
     def reset(self) -> None:
         self._prev_frame = None
         self._last_result = None
+
+    def _is_in_world(self, frame: np.ndarray) -> bool:
+        """Fast crosshair pixel check - True only for in-world Minecraft frames.
+
+        Used to skip the expensive OCR pass during gameplay (the HUD is icons, not
+        text). Non-Minecraft games always return False so their OCR is unaffected.
+        """
+        if self.game != "minecraft" or frame is None:
+            return False
+        try:
+            if self._mc_vision is None:
+                from tools.vision.minecraft_vision import MinecraftVision
+                self._mc_vision = MinecraftVision()
+            return bool(self._mc_vision.analyse(frame).crosshair_visible)
+        except Exception as exc:  # noqa: BLE001 - never let this block perception
+            logger.debug("in_world_check_failed", error=str(exc))
+            return False
 
     @staticmethod
     def _visual_summary(vf: VisualFeatures) -> str:
@@ -97,10 +117,10 @@ class PerceptionAgent:
 
         result = PerceptionResult(changed=True)
 
+        # Screenshot save is DEFERRED until after fusion: writing a 1080p PNG every
+        # cycle is wasteful, so we only persist frames that are actually worth the
+        # audit trail (the VLM ran, or the screen state changed).
         ref: ScreenshotRef | None = None
-        if save_screenshot:
-            ref = self.capture.save(capture_result, run_id=run_id, tag="perception")
-        result.screenshot_ref = ref
 
         # -- L1: OpenCV visual features (deterministic ground truth) ------- #
         vf = self.opencv.extract_features(frame, self._prev_frame)
@@ -115,9 +135,14 @@ class PerceptionAgent:
             logger.warning("opencv_contours_failed", error=str(exc))
 
         # -- L2: OCR ------------------------------------------------------- #
-        if self.ocr is not None:
+        # Skip OCR entirely for in-world Minecraft frames: the HUD is icons (read
+        # by MinecraftVision, not OCR), so a ~40s PaddleOCR pass returns nothing
+        # useful. Detecting the crosshair is a few-ms pixel check.
+        skip_ocr = self._is_in_world(frame)
+        if self.ocr is not None and not skip_ocr:
             try:
-                ocr_results = self.ocr.read_text(frame)
+                # ROI crop: OCR only the interactive UI band, not the full frame.
+                ocr_results = self.ocr.read_text_roi(frame)
                 result.ocr_results = ocr_results
                 result.ocr_confidence = (
                     float(sum(r.confidence for r in ocr_results) / len(ocr_results))
@@ -126,6 +151,8 @@ class PerceptionAgent:
                 methods.append(str(PerceptionMethod.OCR))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("ocr_failed", error=str(exc))
+        elif skip_ocr:
+            logger.debug("ocr_skipped_in_world")
 
         # -- Decide on L3 (VLM) via the fuser's escalation policy ---------- #
         v_vote = self.fuser.classify_from_vision(vf)
@@ -150,6 +177,18 @@ class PerceptionAgent:
         # -- Fuse the three layers into grounded evidence ------------------ #
         evidence = self.fuser.fuse(visual_features=vf, ocr_results=result.ocr_results,
                                    scene=scene, methods_used=methods)
+
+        # Persist the frame ONLY when it is worth the audit trail: the VLM ran, the
+        # screen state changed, or the caller explicitly asked. Skipping the PNG
+        # write on stable frames removes ~100ms per cycle.
+        if save_screenshot and (
+                want_vlm or force_vlm
+                or str(evidence.screen_state) != self._prev_screen):
+            try:
+                ref = self.capture.save(capture_result, run_id=run_id, tag="perception")
+            except Exception as exc:  # noqa: BLE001 - saving is non-critical
+                logger.debug("screenshot_save_skipped", error=str(exc))
+        result.screenshot_ref = ref
         evidence.screenshot_ref = ref
         result.evidence = evidence
         result.screen_state = evidence.screen_state

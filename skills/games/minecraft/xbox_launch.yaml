@@ -174,13 +174,34 @@ launch_config:
   # this many seconds. A slow-but-advancing launch is never killed. OCR is
   # warmed up before the timer starts so its ~40-50s cold-start is free.
   stall_timeout_s: 180      # give up only after this long with NO progress
-  hard_cap_s: 900           # absolute safety net (15 min)
-  poll_interval_s: 1.5
+  hard_cap_s: 1500          # absolute safety net (25 min) - generous headroom so
+                            # a legitimately slow launch+world-load is never cut
+                            # off right as it enters the world.
+  poll_interval_s: 0.5      # inter-cycle pause; small now that OCR is ~1-2s (was
+                            # 1.5 when each cycle was ~40s and the wait was noise)
   confuse_limit: 3          # consecutive unmatched cycles before LLM/VLM help
-  # Every cycle fuses OpenCV (L1) + OCR/crosshair (L2). The VLM (L3) is called
-  # only when the fused confidence is below this OR L1/L2 disagree - so the VLM
-  # confirms/arbitrates ambiguous frames without adding latency to clear ones.
-  vlm_threshold: 0.55
+  max_same_state_actions: 8 # abort a state that fires this many actions w/o transition
+  # After entering a world, poll for the crosshair cheaply (no OCR/VLM) so the
+  # in-world transition is confirmed within seconds instead of a full slow cycle.
+  world_enter_polls: 20     # up to 20 checks
+  world_enter_poll_s: 3.0   # 3s apart => ~60s window for the world to render
+  # After clicking Play on title screen, poll for crosshair to confirm transition
+  title_click_polls: 8      # up to 8 checks
+  title_click_poll_s: 1.0   # 1s apart => ~8s window for world select to appear
+  # Every cycle fuses OpenCV (L1) + OCR/crosshair (L2). The VLM (L3, ~40s) is
+  # called ONLY when OCR did not confidently match a declarative state, the fused
+  # confidence is below this, or the matched state needs a world-name hint
+  # (click_world). A confident declarative OCR match skips the VLM entirely, so
+  # clear frames add no VLM latency (this roughly halves total launch time).
+  vlm_threshold: 0.75
+  # Circuit breaker: after this many consecutive VLM call failures (e.g. a bad
+  # model name returning 404), the VLM is disabled for the rest of the run and
+  # the launch continues OCR-only instead of looping on failing API calls.
+  vlm_max_failures: 3
+  # Motion-gated OCR bypass: if the frame's normalised pixel-change vs the last
+  # cycle is below this, the on-screen text is unchanged so we reuse the previous
+  # OCR text and skip the scan entirely (the "NO SIGNIFICANT CHANGE" branch).
+  ocr_change_threshold: 0.006
   search_query: minecraft for windows
   window_xbox: XBOX
   window_game: Minecraft
@@ -223,6 +244,7 @@ launch_states:
 
   - name: mc_title
     description: Minecraft (Bedrock) title screen - Marketplace/Play visible.
+    skip_vlm: true   # unambiguous OCR match; VLM confirmation adds only latency
     detect:
       window_present: Minecraft
       any_text: ["marketplace", "singleplayer", "play"]
@@ -230,11 +252,24 @@ launch_states:
     action:
       op: click_text
       targets: ["play"]
+      # Guard against marketplace/promo text that CONTAINS "play" as a substring
+      # (e.g. "AI Players Add-On", "...while you play") or near-miss labels, so a
+      # frame where the real Play button isn't cleanly read can't fall through to
+      # clicking a marketplace tile. The real button reads as "Play"/"Flay" (a
+      # short standalone label) and still matches via the exact/fuzzy tiers.
+      exclude: ["players", "add-on", "add on", "marketplace",
+                "dressing", "settings", "unlock"]
+      # Minecraft's title-screen Play button takes 2-5 seconds to navigate and
+      # render the world-select list. Without this settle wait the next OCR cycle
+      # fires immediately, still sees the title text, and re-clicks Play - burning
+      # the same-state action budget instead of detecting the transition.
+      post_click_ms: 4000
     done_when:
       any_text: ["create new", "worlds", "friends", "play world"]
 
   - name: game_card
     description: Minecraft game card open in the Xbox app with a Play/Launch button.
+    skip_vlm: true   # unambiguous OCR match; VLM confirmation adds only latency
     detect:
       window_present: XBOX
       all_text: ["minecraft"]      # the card must actually be showing Minecraft
@@ -249,11 +284,18 @@ launch_states:
       # "with game pass" / "game pass" guard the section heading that is NOT a
       # launch button; the others are unrelated words containing "play".
       exclude: ["replay", "gameplay", "with game pass", "game pass"]
+      # The Xbox game-card Play button needs a couple of seconds after the card
+      # renders before the click registers and Minecraft begins launching.
+      # Without this settle wait the next cycle re-detects game_card, re-clicks
+      # the same (not-yet-live) button, and burns the same-state action budget -
+      # the exact 8-cycle stall seen in launch_20260925_143932.
+      post_click_ms: 3000
     done_when:
       window_present: Minecraft
 
   - name: search_results
     description: Search returned; the Minecraft card is visible but not opened.
+    skip_vlm: true   # unambiguous OCR match; VLM confirmation adds only latency
     detect:
       window_present: XBOX
       any_text: ["minecraft"]
@@ -270,21 +312,35 @@ launch_states:
       any_text: ["play", "launch", "installed"]
 
   - name: game_launching
+    skip_vlm: true   # blank/transitional screen - the VLM has nothing to read
     description: >
       Xbox app is on a transitional/blank screen (Minecraft is starting) - no
       home content and no game card yet. Just wait and re-observe; do NOT start
       a new search here (that was the old false-positive that looped back).
     detect:
       window_present: XBOX
+      # Once the Minecraft window appears (even during loading), we must NOT match
+      # this state. The Minecraft window (loading screen) should be handled by the
+      # 'loading' state above. Excluding Minecraft here prevents the false match
+      # that occurred when OCR found no text on the loading screen.
+      window_absent: ["Minecraft"]
       # NOTE: "launch" is deliberately NOT excluded here - the Xbox startup
       # splash literally reads "Launching XBOX" (contains "launch"), and we want
       # this state to claim that transitional screen and wait rather than falling
       # through to xbox_home and firing a premature search.
+      # Home-page markers ("jump back in", "featured", "recently added") keep the
+      # Xbox HOME page from being mistaken for the blank launching screen - that
+      # mislabel made the agent "wait" forever on the home page after a click that
+      # missed the Minecraft tile. OCR sometimes misreads "MINECRAFT" as "MIMECRAFT"
+      # so we do not rely on the "minecraft" token alone to exclude the home page.
       not_text: ["minecraft", "play", "marketplace",
-                 "store", "library", "home", "game pass"]
+                 "store", "library", "home", "game pass",
+                 "jump back in", "featured", "recently added", "discover"]
     action:
       op: wait
-      ms: 3000
+      ms: 1500          # shorter re-observe interval; the perception cycle itself
+                        # already adds ~2s, so 1.5s here keeps the transitional
+                        # screen responsive without hammering the CPU.
     done_when:
       window_present: Minecraft
 

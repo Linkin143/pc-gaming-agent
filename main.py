@@ -104,6 +104,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Declare DPI awareness FIRST - before any screen capture or input - so mss
+    # captures and pynput clicks share one physical-pixel coordinate space. On a
+    # scaled display this is what makes OCR bounding boxes map 1:1 to click points
+    # (previously the mismatch clicked ~198px off the Minecraft tile).
+    from core.dpi import set_dpi_awareness
+
+    set_dpi_awareness()
+
     parser = build_parser()
     args = parser.parse_args(argv)
     config = get_config()
