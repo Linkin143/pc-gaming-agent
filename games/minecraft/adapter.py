@@ -40,7 +40,8 @@ class MinecraftAdapter(GameAdapter):
     def get_initial_state(self) -> StructuredGameState:
         state = StructuredGameState(game=self.GAME_NAME, screen=ScreenState.UNKNOWN)
         state.game_state = MinecraftState().to_game_state()
-        state.objective = Objective(type="reach_title", description="Reach the title screen.")
+        state.objective = Objective(type="explore",
+                                    description="Explore and gather resources in the world.")
         return state
 
     def interpret_perception(
@@ -100,7 +101,14 @@ class MinecraftAdapter(GameAdapter):
         return self._action_builder
 
     def get_default_goal(self) -> str:
-        return "Launch Minecraft for Windows and reach the in-game world."
+        # This is the GAMEPLAY goal used once the game window is live (the
+        # `run.py mc --launch` flow performs the Xbox launch separately via the
+        # LaunchAgent, then hands control here). It must describe in-world play,
+        # NOT the launch - otherwise the planner reads an already-satisfied
+        # "reach the world" goal, concludes it is done, and only ever picks
+        # `observe`, so no gameplay mechanics ever fire.
+        return ("Survive and explore the Minecraft world: look around, walk "
+                "forward to explore, chop wood from trees, and mine stone.")
 
 
 def get_adapter() -> MinecraftAdapter:

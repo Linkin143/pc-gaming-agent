@@ -181,8 +181,13 @@ class PerceptionAgent:
         # Persist the frame ONLY when it is worth the audit trail: the VLM ran, the
         # screen state changed, or the caller explicitly asked. Skipping the PNG
         # write on stable frames removes ~100ms per cycle.
+        # In-world Minecraft needs the PNG persisted EVERY frame: the game
+        # adapter reloads it from disk to run MinecraftVision (crosshair/health/
+        # block HUD). Without the saved frame the adapter gets None, the HUD read
+        # is skipped, crosshair_visible stays False, and every in-world gameplay
+        # skill fails its precondition - so nothing but `observe` ever runs.
         if save_screenshot and (
-                want_vlm or force_vlm
+                want_vlm or force_vlm or skip_ocr
                 or str(evidence.screen_state) != self._prev_screen):
             try:
                 ref = self.capture.save(capture_result, run_id=run_id, tag="perception")

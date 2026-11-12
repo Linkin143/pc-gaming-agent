@@ -40,15 +40,55 @@ def get_foreground_title() -> str:
         return ""
 
 
+def focus_window(title_substring: str) -> bool:
+    """Best-effort: bring the window whose title contains ``title_substring`` to
+    the foreground. Returns True if a matching window was found and focused.
+
+    Used both before a run starts and when ``validate_foreground`` detects the
+    game lost focus, so a transient focus-steal (terminal/IDE grabbing focus
+    right after launch) self-heals instead of aborting the whole run.
+    """
+    if not title_substring:
+        return False
+    try:
+        import win32con
+        import win32gui
+
+        target = title_substring.lower()
+        found: list[int] = []
+
+        def _cb(hwnd, _acc):  # noqa: ANN001 - win32 callback signature
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            if target in (win32gui.GetWindowText(hwnd) or "").lower():
+                found.append(hwnd)
+
+        win32gui.EnumWindows(_cb, None)
+        if not found:
+            return False
+        hwnd = found[0]
+        # Un-minimise if needed, then raise + focus.
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        except Exception:  # noqa: BLE001
+            pass
+        win32gui.SetForegroundWindow(hwnd)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("focus_window_failed", title=title_substring, error=str(exc))
+        return False
+
+
 def validate_foreground(expected_substring: str | None, *, require: bool,
-                        retry_s: float = 0.5) -> None:
+                        retry_s: float = 1.5) -> None:
     """Ensure the target window is focused before sending input.
 
     Windows briefly drops a window from the foreground during its own
-    click-to-focus handling, which would otherwise raise a spurious
-    ForegroundError on a perfectly healthy action. When ``retry_s`` > 0 we wait
-    that long and re-check ONCE before failing, absorbing that transient. Pass
-    ``retry_s=0`` for the strict, immediate behaviour.
+    click-to-focus handling (and the game can take a moment to come forward right
+    after launch), which would otherwise raise a spurious ForegroundError on a
+    perfectly healthy action. We first ACTIVELY try to re-focus the target
+    window, then (when ``retry_s`` > 0) wait and re-check ONCE before failing,
+    absorbing that transient. Pass ``retry_s=0`` for strict, immediate behaviour.
     """
     if not require or not expected_substring:
         return
@@ -56,6 +96,8 @@ def validate_foreground(expected_substring: str | None, *, require: bool,
     title = get_foreground_title()
     if expected in title.lower():
         return
+    # Proactively pull the game window back to the foreground before failing.
+    focus_window(expected_substring)
     if retry_s > 0:
         time.sleep(retry_s)
         title = get_foreground_title()

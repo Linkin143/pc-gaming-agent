@@ -68,11 +68,54 @@ def _cmd_run(args: argparse.Namespace) -> int:
                           enable_vlm=not args.no_vlm, dry_run=args.dry_run,
                           persistent_checkpoints=args.persist)
     goal = args.goal or engine.adapter.get_default_goal()
+    # Pull the live game window to the foreground before the loop starts. After a
+    # `--launch`, the terminal/IDE often still owns focus; without this the very
+    # first action raises ForegroundError and the run stalls before any gameplay.
+    if not args.dry_run:
+        from tools.input.safety import focus_window
+
+        window_sub = engine.adapter.get_window_title_regex().strip(".*")
+        if focus_window(window_sub):
+            import time as _t
+            _t.sleep(1.0)  # let Windows settle the foreground before input
+            logger.info("game_window_focused", window=window_sub)
     logger.info("run_start", game=args.game, goal=goal, dry_run=args.dry_run)
     final = engine.run(user_goal=goal, max_iterations=config.max_iterations)
     print(f"Finished: {final.get('finished')} | reason: {final.get('finish_reason')} "
           f"| iterations: {final.get('iteration')}")
     return 0
+
+
+def _cmd_play(args: argparse.Namespace) -> int:
+    """Explicit, deterministic Minecraft gameplay (no LLM planner loop).
+
+    Waits until the game is stable (loading done + in-world crosshair), then
+    fires the exact mechanics directly: W/S/A/D movement, relative-mouse camera,
+    left-click break, right-click place, Space jump.
+    """
+    if args.game != "minecraft":
+        print("The 'play' command currently supports only Minecraft.")
+        return 2
+
+    from agents.orchestrator.builder import build_minecraft_gameplay_controller
+    from tools.input.safety import focus_window
+
+    config = get_config()
+    controller = build_minecraft_gameplay_controller(config=config, dry_run=args.dry_run)
+
+    # Make sure the game window owns focus before we send any input.
+    if not args.dry_run:
+        import time as _t
+        if focus_window("Minecraft"):
+            _t.sleep(1.0)
+            logger.info("game_window_focused", window="Minecraft")
+
+    if args.loop:
+        ok = controller.run_loop(iterations=args.iterations, wait_stable=not args.no_wait)
+    else:
+        ok = controller.run_demo_sequence(wait_stable=not args.no_wait)
+    print(f"Gameplay {'completed' if ok else 'did not run (game not stable)'}.")
+    return 0 if ok else 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -100,6 +143,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--no-vlm", action="store_true")
     p_run.add_argument("--persist", action="store_true")
     p_run.set_defaults(func=_cmd_run)
+
+    p_play = sub.add_parser(
+        "play", help="Explicit deterministic Minecraft gameplay (no LLM loop).")
+    p_play.add_argument("--game", default="minecraft")
+    p_play.add_argument("--dry-run", action="store_true",
+                        help="Run the sequence but send no real input.")
+    p_play.add_argument("--loop", action="store_true",
+                        help="Repeat an explore-and-mine loop instead of the one-shot demo.")
+    p_play.add_argument("--iterations", type=int, default=20,
+                        help="Loop cycles when --loop is set (default 20).")
+    p_play.add_argument("--no-wait", action="store_true",
+                        help="Skip the stability gate and act immediately.")
+    p_play.set_defaults(func=_cmd_play)
     return parser
 
 

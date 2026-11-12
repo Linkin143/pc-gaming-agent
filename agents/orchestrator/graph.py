@@ -257,14 +257,22 @@ class GameAutomationEngine:
         except ForegroundError as exc:
             # The target game window lost focus (e.g. the user alt-tabbed, or the
             # console/IDE is foreground). This is a TRANSIENT, recoverable
-            # condition - NOT a reason to crash the run. Surface it as a soft
-            # verification failure so the recovery agent can re-focus and retry,
-            # instead of the KBM executor's re-raise propagating out of the graph.
+            # condition - NOT a reason to crash the run. Actively pull the game
+            # window back to the foreground so the NEXT iteration can act, and
+            # surface this as UNCERTAIN (not FAILURE) so we loop straight back to
+            # perception without burning the bounded recovery budget on what is
+            # really just a focus hiccup.
             logger.warning("executor_foreground_lost", error=str(exc))
+            try:
+                from tools.input.safety import focus_window
+                window_sub = self.adapter.get_window_title_regex().strip(".*")
+                focus_window(window_sub)
+            except Exception:  # noqa: BLE001 - re-focus is best-effort
+                pass
             return {"structured": dump_structured(structured),
-                    "verification_result": VerificationResult.FAILURE.value,
-                    "verification": {"result": VerificationResult.FAILURE.value,
-                                     "reason": "target window not in foreground"},
+                    "verification_result": VerificationResult.UNCERTAIN.value,
+                    "verification": {"result": VerificationResult.UNCERTAIN.value,
+                                     "reason": "target window not in foreground; re-focused"},
                     "log": self._log_entry("executor", foreground_lost=True)}
         return {"structured": dump_structured(structured),
                 "action_result": {"results": results},

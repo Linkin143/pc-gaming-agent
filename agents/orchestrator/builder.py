@@ -83,3 +83,39 @@ def build_engine(*, game: str | None = None, config: AppConfig | None = None,
                                   checkpointer=checkpointer)
     logger.info("engine_built", game=game, dry_run=dry, ocr=enable_ocr, vlm=vlm is not None)
     return engine
+
+
+def build_minecraft_gameplay_controller(*, config: AppConfig | None = None,
+                                        dry_run: bool | None = None):
+    """Build the explicit, deterministic Minecraft gameplay controller.
+
+    This is the "fire the exact inputs" path (W/S/A/D, mouse camera, left/right
+    click, Space) that runs AFTER launch, independent of the LLM planner loop.
+    It reuses the same safe KeyboardExecutor / MouseExecutor as the engine.
+    """
+    from agents.gameplay.minecraft_gameplay import MinecraftGameplayController
+
+    config = config or get_config()
+    configure_logging(level=config.log_level, json_output=config.log_json,
+                      log_file=config.logs_dir / "pcgaf.log")
+
+    adapter = get_game_adapter("minecraft")
+    window_re = adapter.get_window_title_regex()
+    target_window = window_re.strip(".*")
+
+    dry = config.execution.dry_run if dry_run is None else dry_run
+    capture = ScreenCapture(config.screenshots_dir)
+    keyboard = KeyboardExecutor(
+        target_window=target_window,
+        require_foreground=config.execution.require_foreground and not dry,
+        dry_run=dry)
+    mouse = MouseExecutor(
+        target_window=target_window,
+        require_foreground=config.execution.require_foreground and not dry,
+        dry_run=dry)
+
+    controller = MinecraftGameplayController(
+        keyboard=keyboard, mouse=mouse, capture=capture,
+        window_title_re=window_re, dry_run=dry)
+    logger.info("gameplay_controller_built", dry_run=dry)
+    return controller
